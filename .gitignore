@@ -1,0 +1,27 @@
+# Per-installation preferences and reports (history includes personal paths).
+/settings.xml
+/Reports/
+
+# Generated release bundles; publish intentionally as release artifacts.
+/Releases/
+
+# Runtime binaries belong in reviewed release assets, not source history.
+/Magick/*.exe
+/Magick/*.dll
+/Development/Release Prep/
+
+# Local comics, generated fixtures, screenshots and archived build outputs.
+/Development/Test Environment/
+/Development/Legacy Temp/
+/Development/Build Archives/
+/Development/Cache/
+/Development/GitHub Repo/
+
+# Session-specific working notes; shared guidance lives in the root docs.
+/Development/Implementation History.md
+/Development/Restart Review.md
+
+# Interpreter caches.
+__pycache__/
+*.pyc
+*.pyo

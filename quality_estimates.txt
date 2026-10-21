@@ -1,0 +1,11 @@
+# Sample JPEG page savings; ImageMagick (CBX-style); No Resize; 9 pages from 3 books. Not a whole-book prediction.
+60|66.6|63.2|69.0
+65|64.5|60.9|67.7
+70|62.4|58.9|65.4
+75|60.1|56.8|63.8
+80|51.6|48.1|56.4
+85|40.8|37.3|45.4
+90|23.2|20.0|30.2
+95|-3.6|-7.7|1.9
+100|-34.6|-41.4|-26.6
+Lossless|-237.4|-284.7|-172.2
