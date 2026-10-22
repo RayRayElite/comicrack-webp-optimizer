@@ -1,0 +1,97 @@
+{
+  "name": "ImageMagick minimal Q8 encoder",
+  "version": "7.1.2-34",
+  "architecture": "Windows x64",
+  "binary_sha256": "2faf848e4c37b896e58154c67fbb5a7175772bb77183c2f9166fd984e4d93d0b",
+  "binary_bytes": 6769152,
+  "dll_imports": [
+    "advapi32.dll",
+    "gdi32.dll",
+    "kernel32.dll",
+    "msvcrt.dll",
+    "urlmon.dll",
+    "user32.dll"
+  ],
+  "version_output": "Version: ImageMagick 7.1.2-34 Q8 x86_64 24891 https://imagemagick.org\nCopyright: (C) 1999 ImageMagick Studio LLC\nLicense: https://imagemagick.org/license/\nFeatures: Cipher DPC Zero-configuration \nDelegates (built-in): gslib jpeg lcms ps webp\nCompiler: gcc (16.2)\n",
+  "compiled_dependencies": [
+    "libjpeg-turbo 3.2.0",
+    "libwebp/libsharpyuv 1.6.0",
+    "Little CMS 2.19.1",
+    "MinGW-w64 runtime 14.0.0",
+    "GCC runtime 16.2.0"
+  ],
+  "compiler": "w64devkit 2.10.1, GCC 16.2.0; NASM 3.01 for JPEG SIMD",
+  "configuration": "Q8; static; no HDRI/OpenMP/modules/Magick++; embedded configuration; optional external delegates disabled",
+  "source_changes": "No encoder/codec C or C++ algorithm changes. Generated .pc paths and configuration path macros normalized; embedded threshold header generated with escaped C strings; core archive verified using a response file; explicit static link and symbol stripping.",
+  "rebuild_recipe": "Development/ENCODER_BUILD.md and Development/build_encoder.py in the source repository",
+  "inputs": [
+    {
+      "name": "w64devkit-x64-2.10.1.7z.exe",
+      "url": "https://github.com/skeeto/w64devkit/releases/download/v2.10.1/w64devkit-x64-2.10.1.7z.exe",
+      "sha256": "add1edf984ce4d473cfeb7c52e0ab38db73a855bba6c7f564d5e16648eb2896a",
+      "kind": "build-tool"
+    },
+    {
+      "name": "ImageMagick-7.1.2-34.tar.xz",
+      "url": "https://download.imagemagick.org/releases/ImageMagick-7.1.2-34.tar.xz",
+      "sha256": "d9d826fec211d56efbb4343f19697d0cfb83b387c1d9ab11cf9c5770056c246c",
+      "kind": "source"
+    },
+    {
+      "name": "libwebp-1.6.0.tar.gz",
+      "url": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz",
+      "sha256": "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564",
+      "kind": "source"
+    },
+    {
+      "name": "libjpeg-turbo-3.2.0.tar.gz",
+      "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.0/libjpeg-turbo-3.2.0.tar.gz",
+      "sha256": "6f30092cef9fb839779646608f4ee14ae3cbac989c47fa05e841b0841f09878e",
+      "kind": "source"
+    },
+    {
+      "name": "lcms2-2.19.1.tar.gz",
+      "url": "https://github.com/mm2/Little-CMS/releases/download/lcms2.19.1/lcms2-2.19.1.tar.gz",
+      "sha256": "bfc54f7bab59fbc921012014a8032e4cba4abd46db47d46b76416a8c0b2815c8",
+      "kind": "source"
+    },
+    {
+      "name": "nasm-3.01-win64.zip",
+      "url": "https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-win64.zip",
+      "sha256": "e0ba5157007abc7b1a65118a96657a961ddf55f7e3f632ee035366dfce039ca4",
+      "kind": "build-tool"
+    },
+    {
+      "name": "GCC-COPYING.RUNTIME",
+      "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-16.2.0/COPYING.RUNTIME",
+      "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+      "kind": "license"
+    },
+    {
+      "name": "GCC-COPYING3",
+      "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-16.2.0/COPYING3",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "kind": "license"
+    },
+    {
+      "name": "LGPL-2.1.txt",
+      "url": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "kind": "license"
+    }
+  ],
+  "license_files": {
+    "magick_License.txt": "131447ad0099069beaa32acf1700716eea294a5bdf936d8211d7026b1849e5d4",
+    "NOTICE.txt": "a58570cb757bd9223bed229f74cd85c3117c622d23553766427b4e816e65e1e1",
+    "licenses/libjpeg-turbo-LICENSE.md": "ba6bceebcba0fdd35488477c2cca8c4632ce82c74dbfbc87d886ce6fc4433579",
+    "licenses/libjpeg-turbo-README.ijg": "75815e3bf6484201a3c3d17a1bbf10f2e8e3237f84df10a2357ea896db2a81d6",
+    "licenses/libwebp-COPYING.txt": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf",
+    "licenses/libwebp-PATENTS.txt": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c",
+    "licenses/libwebp-AUTHORS.txt": "f251be89fd442bd9d701360730aea163cc8e2076ff03528f59267dc2c4f8b60a",
+    "licenses/lcms2-LICENSE.txt": "6dbd60437f8ef91d8de1f08ad75882547fd4931bfcc3566a0735f28db1484d31",
+    "licenses/MinGW-w64-runtime.txt": "ecff91ddb5799c8b79a4bdb576921b9c3e2989783fd1944527e8eb9b41a5ff5f",
+    "licenses/GCC-RUNTIME-EXCEPTION.txt": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+    "licenses/GCC-GPL-3.0.txt": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "licenses/LGPL-2.1.txt": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95"
+  }
+}

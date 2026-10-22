@@ -1,0 +1,4 @@
+# Preserve upstream legal/provenance bytes; their exact SHA-256 is audited.
+Magick/** -text -whitespace
+*.png -text
+*.jpg -text

@@ -62,6 +62,7 @@ try:
     File.Delete(source + ".webp-recovery.txt")
     _write_book_checkpoint(scan, policy, "", "skipped", {"STATUS": "SKIPPED", "SKIP_REASON": "SIZE_POLICY"})
     assert "size policy" in _resume_book_checkpoint(source, policy)[1]["MESSAGE"]
+    assert _resume_book_checkpoint(source, policy)[1]["RESUMED_SKIP_REASON"] == "SIZE_POLICY"
     # CBR -> CBZ completion must also be found under ComicRack's new path.
     replacement = dict(policy)
     replacement["run_mode"] = "Replace Originals"

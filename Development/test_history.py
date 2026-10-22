@@ -1,5 +1,5 @@
 """Native-runtime history tests, with an isolated report store."""
-saved_history_globals = dict((name, globals()[name]) for name in ['REPORT_DIR', 'SETTINGS_PATH', 'OptionsForm', '_find_archive_tool', '_find_python_tool'])
+saved_history_globals = dict((name, globals()[name]) for name in ['REPORT_DIR', 'SETTINGS_PATH', 'OptionsForm', 'RunHistoryForm', '_open_history_external', '_find_archive_tool', '_find_python_tool'])
 try:
     REPORT_DIR = Path.Combine(render_dir, 'history-' + System.Guid.NewGuid().ToString('N'))
     SETTINGS_PATH = Path.Combine(REPORT_DIR, 'settings.xml')
@@ -76,6 +76,41 @@ try:
     _find_archive_tool = forbidden_dependency_probe
     _find_python_tool = forbidden_dependency_probe
     _run_phase_two([])
+    # Controller protocol: retry returns a draft, retest changes only the
+    # intended choices, and no new run or settings write happens automatically.
+    transitions = []
+    class NavigationOptions(object):
+        def __init__(self):
+            self._backup_checkbox = CheckBox()
+            self._backup_checkbox.Checked = True
+            self.options = {"run_mode": "Analyze Only"}
+        def ShowDialog(self):
+            transitions.append('options')
+            return DialogResult.Retry if transitions.count('options') == 1 else DialogResult.Cancel
+        def _collect_options(self):
+            return {"quality_mode": "Q75", "run_mode": "Replace Originals", "work_dir": "draft", "dark_mode": True}
+        def _restore_draft(self, values):
+            assert transitions == ['options', 'options-disposed', 'history', 'history-disposed']
+            assert values['run_mode'] == 'Test savings & quality'
+            assert values['quality_mode'] == 'Q75' and values['work_dir'] == 'recorded'
+            assert values['keep_test_previews'] and values['create_backup'] and values['dark_mode']
+        def Dispose(self):
+            transitions.append('options-disposed')
+    class NavigationHistory(object):
+        retest = {"options": {"work_dir": "recorded", "encoder_backend": ENCODER_BACKEND_VALUES[0]}}
+        def ShowDialog(self):
+            transitions.append('history')
+        def Dispose(self):
+            transitions.append('history-disposed')
+    OptionsForm = NavigationOptions
+    def fake_external(allow_retest=True, dark=None):
+        transitions.extend(['history', 'history-disposed'])
+        return NavigationHistory.retest
+    _open_history_external = fake_external
+    before = File.ReadAllText(SETTINGS_PATH)
+    assert _choose_options_with_history([]) is None
+    assert File.ReadAllText(SETTINGS_PATH) == before
+    print('PASS: sequential navigation disposes options first, restores retest/draft choices and leaves settings unchanged')
     print('PASS: structured history, legacy/corrupt-record fallback, preview states, safe historical close, settings/source retention, retest preparation and no-selection history-only entry')
 finally:
     globals().update(saved_history_globals)

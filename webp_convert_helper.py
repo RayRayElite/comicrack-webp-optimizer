@@ -10,7 +10,9 @@ Search [Hxx] markers and read ARCHITECTURE.md before changing the protocol.
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 import time
+import threading
 import os
 import shutil
 import subprocess
@@ -19,6 +21,9 @@ import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import performance_support as perf
 
 from PIL import Image, ImageCms, features
 
@@ -47,7 +52,12 @@ def build_parser():
     parser.add_argument("--work-dir", default="", help="Temporary work folder; blank uses source directory")
     parser.add_argument("--preview-dir", default="", help="Retain three JPEG/WebP page pairs for a quality trial")
     parser.add_argument("--resize-mode", required=False, default="No Resize")
-    parser.add_argument("--page-workers", type=int, choices=(1, 2, 4), default=1, help="Bounded concurrent page encoders; books remain sequential")
+    parser.add_argument("--page-workers", type=int, choices=perf.WORKERS, default=1, help="Bounded concurrent page encoders; books remain sequential")
+    parser.add_argument("--resource-profile", choices=("Normal", "Background"), default="Normal")
+    parser.add_argument("--metrics", action="store_true", help="Measure helper and explicitly launched child processes")
+    parser.add_argument("--prefetch-next", default="", help="Optionally cache one next source during encoding")
+    parser.add_argument("--prefetch-record", default="", help="Owned cache manifest from the preceding helper")
+    parser.add_argument("--prefetch-budget-mb", type=int, choices=(256, 512, 1024), default=256)
     return parser
 
 
@@ -201,7 +211,7 @@ def evaluate_size_policy(source_size, output_size, policy):
 def run_extract(archive_tool, archive_path, target_dir):
     """Extract into caller-owned work storage and return the 7-Zip exit/output tuple."""
     command = [archive_tool, "x", "-y", archive_path, f"-o{target_dir}"]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = perf.run_tool(command, capture_output=True, text=True)
     return result.returncode, result.stdout, result.stderr
 
 
@@ -258,7 +268,7 @@ def encode_with_magick(tool_path, file_path, webp_path, options, resize_mode, ba
     command = [tool_path]
     if ENCODER_THREAD_LIMIT:
         command.extend(["-limit", "thread", str(ENCODER_THREAD_LIMIT)])
-    command.extend([file_path, "+profile", "exif", "+profile", "xmp"])
+    command.extend(["-", "+profile", "exif", "+profile", "xmp"])
     if resized_size:
         command.extend(["-resize", "{0}x{1}".format(resized_size[0], resized_size[1])])
     if options.get("lossless"):
@@ -268,10 +278,16 @@ def encode_with_magick(tool_path, file_path, webp_path, options, resize_mode, ba
         # ImageMagick otherwise silently switches Q100 to lossless.
         if options.get("quality") == 100:
             command.extend(["-define", "webp:lossless=false"])
-    command.append(webp_path)
-    result = subprocess.run(command, capture_output=True, text=True)
+    # Pass file handles, not filenames, across the encoder boundary. Python can
+    # open long Unicode/UNC paths that ImageMagick's filename API rejects.
+    # Explicit WebP stdout keeps the same encoding/profile settings, without
+    # buffering a whole page in Python or requiring local temporary storage.
+    command.append("webp:-")
+    with open(file_path, "rb") as incoming, open(webp_path, "xb") as outgoing:
+        result = perf.run_tool(command, stdin=incoming, stdout=outgoing, stderr=subprocess.PIPE)
     if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout or "ImageMagick failed to encode a page.").strip())
+        detail = result.stderr.decode("utf-8", "replace").strip() or "ImageMagick failed to encode a page."
+        raise RuntimeError("ImageMagick failed for " + file_path + ": " + detail)
     return describe_resize(original_size, resized_size, resize_mode)
 
 
@@ -298,7 +314,7 @@ def encode_with_cwebp(tool_path, file_path, webp_path, options, resize_mode):
     if resized_size:
         command.extend(["-resize", str(resized_size[0]), str(resized_size[1]), "-resize_mode", "down_only"])
     command.extend([file_path, "-o", webp_path])
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = perf.run_tool(command, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "cwebp failed to encode a page.").strip())
     return describe_resize(original_size, resized_size, resize_mode)
@@ -307,14 +323,14 @@ def encode_with_cwebp(tool_path, file_path, webp_path, options, resize_mode):
 # ===========================================================================
 # [H06] Staged-page conversion and collision checks
 # ===========================================================================
-def convert_pages(page_files, mode, encoder_backend, resize_mode, page_workers=1):
+def convert_pages(page_files, mode, encoder_backend, resize_mode, page_workers=1, progress=None):
     """Encode independent staged JPEGs with bounded concurrency and full validation.
 
     Preflight every target before starting any worker. Only temporary pages are
     modified. Executor shutdown waits for all active workers even on failure,
     so the caller can safely remove work storage after an exception.
     """
-    if page_workers not in (1, 2, 4):
+    if page_workers not in perf.WORKERS:
         raise ValueError("Page workers must be 1, 2 or 4")
     options = quality_options(mode)
     backend_name, backend_tool = resolve_encoder_backend(encoder_backend)
@@ -326,6 +342,9 @@ def convert_pages(page_files, mode, encoder_backend, resize_mode, page_workers=1
         if key in targets or os.path.exists(target):
             raise RuntimeError("Page name collision: " + target)
         targets.add(key)
+
+    completed = [0]
+    progress_lock = threading.Lock()
 
     def encode_page(file_path):
         webp_path = str(Path(file_path).with_suffix(".webp"))
@@ -342,6 +361,10 @@ def convert_pages(page_files, mode, encoder_backend, resize_mode, page_workers=1
             if converted.format != "WEBP" or converted.size != expected:
                 raise RuntimeError("Converted page format or dimensions do not match: " + webp_path)
         os.remove(file_path)
+        with progress_lock:
+            completed[0] += 1
+            if progress:
+                progress("ENCODING", completed[0], len(sources))
         return applied
 
     # Threads coordinate subprocesses/Pillow work; never start parallel books.
@@ -415,7 +438,7 @@ def rebuild_cbr(root_dir, output_path, rar_tool):
         raise FileExistsError("Refusing to overwrite existing output: " + output_path)
 
     command = [rar_tool, "a", "-idq", output_path] + relative_paths
-    result = subprocess.run(command, capture_output=True, text=True, cwd=root_dir)
+    result = perf.run_tool(command, capture_output=True, text=True, cwd=root_dir)
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "WinRAR failed to build the CBR archive.").strip())
 
@@ -469,7 +492,7 @@ def validate_embedded_metadata(output_path, archive_tool):
             comicbook_embedded = "ComicBook.xml" in names
         return comicinfo_embedded, comicbook_embedded
 
-    result = subprocess.run([archive_tool, "l", "-ba", output_path], capture_output=True, text=True)
+    result = perf.run_tool([archive_tool, "l", "-ba", output_path], capture_output=True, text=True)
     listing = result.stdout or ""
     comicinfo_embedded = "ComicInfo.xml" in listing
     comicbook_embedded = "ComicBook.xml" in listing
@@ -479,7 +502,25 @@ def validate_embedded_metadata(output_path, archive_tool):
 # ===========================================================================
 # [H08] Rebuilt-archive and decoded-image validation
 # ===========================================================================
-def validate_output(output_path, archive_tool, root_dir):
+def manifest_mismatch(expected, actual, label):
+    """Explain the exact difference without weakening manifest validation.
+
+    JSON escapes control characters so a filename cannot inject protocol lines.
+    Keep all names/counts: transient staging entries must remain diagnosable.
+    """
+    import json
+    from collections import Counter
+    expected, actual = list(expected), list(actual)
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    duplicates = sorted(name for name, count in Counter(actual).items() if count > 1)
+    return (label + " file manifest does not match. Expected " + str(len(expected)) + " files; found " + str(len(actual))
+            + ". Missing from output (" + str(len(missing)) + "): " + json.dumps(missing, ensure_ascii=True)
+            + "; unexpected in output (" + str(len(extra)) + "): " + json.dumps(extra, ensure_ascii=True)
+            + "; duplicate members (" + str(len(duplicates)) + "): " + json.dumps(duplicates, ensure_ascii=True))
+
+
+def validate_output(output_path, archive_tool, root_dir, workers=1):
     """Check staged/output member identity, integrity and supported image decoding.
 
     CBZ uses exact member hashes plus CRC checks; CBR is tested, extracted
@@ -493,20 +534,34 @@ def validate_output(output_path, archive_tool, root_dir):
         with zipfile.ZipFile(output_path) as archive:
             names = [entry.filename for entry in archive.infolist() if not entry.is_dir()]
             if len(names) != len(set(names)) or set(names) != set(expected):
-                raise RuntimeError("Output archive file manifest does not match.")
-            # archive.read verifies each member CRC while consuming its bytes.
-            # The same pass checks hashes and decoding; no second testzip pass.
+                raise RuntimeError(manifest_mismatch(expected, names, "Output archive"))
+            # One ZIP reader verifies CRCs. A bounded queue overlaps decoding/hash
+            # work; at most 64 MiB of compressed buffers and `workers` tasks wait.
+            # Encoding has already joined, so this reuses the same worker budget.
             import hashlib
             import io
-            for name, path in expected.items():
-                data = archive.read(name)
-                if hashlib.sha256(data).digest() != hashlib.sha256(path.read_bytes()).digest():
+            def verify(name, path, data):
+                if hashlib.sha256(data).digest() != bytes.fromhex(perf.file_hash(path)):
                     raise RuntimeError("Output member content mismatch: " + name)
                 if path.suffix.lower() in IMAGE_EXTENSIONS:
                     with Image.open(io.BytesIO(data)) as image:
                         image.load()
+            pending, buffered = deque(), 0
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for name, path in expected.items():
+                    size = archive.getinfo(name).file_size
+                    while pending and (len(pending) >= workers or buffered + size > 64 * 1048576):
+                        future, used = pending.popleft()
+                        future.result()
+                        buffered -= used
+                    data = archive.read(name)  # CRC failure still aborts validation.
+                    pending.append((executor.submit(verify, name, path, data), len(data)))
+                    buffered += len(data)
+                for future, _ in pending:
+                    future.result()
+
     else:
-        result = subprocess.run([archive_tool, "t", output_path], capture_output=True, text=True)
+        result = perf.run_tool([archive_tool, "t", output_path], capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError("Output CBR integrity check failed.")
         with tempfile.TemporaryDirectory(prefix="webp_verify_") as verified:
@@ -515,7 +570,7 @@ def validate_output(output_path, archive_tool, root_dir):
                 raise RuntimeError("Could not verify output CBR.")
             actual = {p.relative_to(verified).as_posix(): p for p in Path(verified).rglob("*") if p.is_file()}
             if set(actual) != set(expected):
-                raise RuntimeError("Output CBR file manifest does not match.")
+                raise RuntimeError(manifest_mismatch(expected, actual, "Output CBR"))
             for name, path in actual.items():
                 if path.read_bytes() != expected[name].read_bytes():
                     raise RuntimeError("Output member content mismatch: " + name)
@@ -533,11 +588,134 @@ def print_result(data):
         print(f"{key}={value}")
 
 
+# [H10] Read-only recovery checks and generated-fixture setup diagnostics
+_PROGRESS_LOCK = threading.Lock()
+
+
+def emit_progress(stage, completed=0, total=0):
+    """Emit bounded progress records; the adapter applies them on its UI thread."""
+    with _PROGRESS_LOCK:
+        print("PROGRESS=%s|%d|%d" % (stage, completed, total), flush=True)
+
+
+def inspect_archive(archive_path, archive_tool, work_dir):
+    """Read/test all members and decode supported images without changing input.
+
+    Readability does not prove that an output belongs to an interrupted job or
+    has the intended subjective quality. Recovery never installs it automatically.
+    """
+    import io
+    path = Path(archive_path)
+    before = path.stat()
+    count = 0
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as archive:
+            members = [item for item in archive.infolist() if not item.is_dir()]
+            names = [item.filename.casefold() for item in members]
+            if len(names) != len(set(names)):
+                raise RuntimeError("Duplicate archive member names")
+            for item in members:
+                data = archive.read(item)  # Verifies CRC, including non-image members.
+                if Path(item.filename).suffix.lower() in IMAGE_EXTENSIONS:
+                    with Image.open(io.BytesIO(data)) as image:
+                        image.load()
+                    count += 1
+    else:
+        if not archive_tool:
+            raise RuntimeError("7-Zip is required to check this non-ZIP archive")
+        checked = perf.run_tool([archive_tool, "t", str(path)], capture_output=True, text=True, timeout=120)
+        if checked.returncode:
+            raise RuntimeError("Archive integrity test failed: " + (checked.stderr or checked.stdout)[-2000:])
+        with tempfile.TemporaryDirectory(prefix="recovery_check_", dir=work_dir) as expanded:
+            code, _, error = run_extract(archive_tool, str(path), expanded)
+            if code:
+                raise RuntimeError("Recovery extraction failed: " + error[-2000:])
+            for page in walk_page_files(expanded):
+                with Image.open(page) as image:
+                    image.load()
+                count += 1
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise RuntimeError("Archive changed during inspection")
+    if count == 0:
+        raise RuntimeError("No supported image pages found")
+    return count
+
+
+def diagnostics_main(argv):
+    """Check setup with disposable files, or inspect an existing archive read-only."""
+    parser = argparse.ArgumentParser(description="WebP Optimizer diagnostics")
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--check-setup", action="store_true")
+    modes.add_argument("--check-archive")
+    parser.add_argument("--encoder-backend", default="ImageMagick (Recommended)")
+    parser.add_argument("--archive-tool", default="")
+    parser.add_argument("--rar-tool", default="")
+    parser.add_argument("--require-rar", action="store_true")
+    parser.add_argument("--work-dir", required=True)
+    args = parser.parse_args(argv)
+    root = Path(args.work_dir)
+    checks = {}
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        if args.check_archive:
+            count = inspect_archive(args.check_archive, args.archive_tool, str(root))
+            print_result({"STATUS": "OK", "CHECK_MESSAGE": "Readable archive; %d supported image pages. Visual quality and job identity require review." % count})
+            return 0
+        checks["CHECK_PYTHON"] = "OK | Python " + sys.version.split()[0]
+        import PIL
+        checks["CHECK_PILLOW"] = "OK | Pillow " + PIL.__version__
+        if not features.check("webp"):
+            raise RuntimeError("Pillow has no WebP decoding support. Install a WebP-enabled Pillow: py -3 -m pip install --upgrade Pillow")
+        with tempfile.TemporaryDirectory(prefix="setup_check_", dir=root) as temporary:
+            temporary = Path(temporary)
+            checks["CHECK_STORAGE"] = "OK | Created temporary files in " + str(root)
+            original = temporary / "probe.jpg"
+            Image.new("RGB", (32, 48), (40, 80, 120)).save(original)
+            # Exercise the selected encoder and decoding, not just PATH discovery.
+            converted = convert_pages([str(original)], "Q80", args.encoder_backend, "No Resize")
+            checks["CHECK_ENCODER"] = "OK | Encoded and decoded a test page with " + converted["backend_used"]
+            sample = temporary / "probe.cbz"
+            with zipfile.ZipFile(sample, "x") as archive:
+                archive.write(original.with_suffix(".webp"), "probe.webp")
+            if not args.archive_tool:
+                raise RuntimeError("7-Zip missing. Restore ComicRack's Resources/7z.exe or 7za.exe")
+            tested = perf.run_tool([args.archive_tool, "t", str(sample)], capture_output=True, text=True, timeout=30)
+            if tested.returncode:
+                raise RuntimeError("7-Zip could not test the generated archive")
+            checks["CHECK_ARCHIVE_TOOL"] = "OK | 7-Zip tested a generated CBZ"
+            if args.require_rar:
+                if not args.rar_tool:
+                    raise RuntimeError("WinRAR rar.exe is required for the selected CBR rebuild option")
+                rar = temporary / "probe.cbr"
+                # Build only a dedicated page folder, never the diagnostics folder itself.
+                pages = temporary / "pages"
+                pages.mkdir()
+                shutil.copy2(original.with_suffix(".webp"), pages / "probe.webp")
+                rebuild_cbr(pages, rar, args.rar_tool)
+                inspect_archive(rar, args.archive_tool, str(temporary))
+                checks["CHECK_RAR"] = "OK | WinRAR created a readable test CBR"
+        print_result(dict(checks, STATUS="OK"))
+        return 0
+    except Exception as error:
+        print_result(dict(checks, STATUS="ERROR", CHECK_MESSAGE=str(error)))
+        return 1
+
+
 def main():
     """Process one archive into a distinct output and emit a machine-readable result.
 
     Work is temporary; retained preview assets live outside it. The caller
     owns final source replacement, library updates and trial-output cleanup."""
+    if "--check-setup" in sys.argv[1:] or "--check-archive" in sys.argv[1:]:
+        return diagnostics_main(sys.argv[1:])
+    if "--cleanup-prefetch" in sys.argv[1:]:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--cleanup-prefetch", required=True)
+        parser.add_argument("--work-dir", required=True)
+        cleanup = parser.parse_args()
+        perf.cleanup_cache(cleanup.cleanup_prefetch, cleanup.work_dir)
+        return 0
     global ENCODER_THREAD_LIMIT
     args = build_parser().parse_args()
     ENCODER_THREAD_LIMIT = 1 if args.page_workers > 1 else None
@@ -555,7 +733,12 @@ def main():
     temp_dir = tempfile.mkdtemp(prefix="webp_optimizer_", dir=work_root)
     source_size = os.path.getsize(source_path) if os.path.exists(source_path) else 0
 
+    prefetch = None
+    keep_prefetch = False
+    if args.metrics:
+        perf.TRACKER = perf.ResourceTracker()
     try:
+        perf.set_priority(args.resource_profile)
         resolve_encoder_backend(args.encoder_backend)
         required = source_size * 4
         if zipfile.is_zipfile(source_path):
@@ -569,7 +752,12 @@ def main():
         source_stat = os.stat(source_path)
         timings[stage] = time.perf_counter() - stage_started
         stage, stage_started = "EXTRACT", time.perf_counter()
-        code, _, stderr = run_extract(args.archive_tool, source_path, temp_dir)
+        emit_progress("EXTRACTING")
+        extraction_source = source_path
+        if args.prefetch_record:
+            extraction_source, reused = perf.cached_input(args.prefetch_record, source_path, work_root)
+            print_result({"PREFETCH_USED": "Yes" if reused else "No"})
+        code, _, stderr = run_extract(args.archive_tool, extraction_source, temp_dir)
         if code != 0:
             print_result({
                 "STATUS": "ERROR",
@@ -578,6 +766,10 @@ def main():
             })
             return 1
 
+        if args.prefetch_record:
+            perf.cleanup_cache(args.prefetch_record, work_root)
+            print_result({"PREFETCH_CLEANED_RECORD": args.prefetch_record})
+            args.prefetch_record = ""
         # Discover pages only after extraction succeeded; preserve non-image members.
         page_files = walk_page_files(temp_dir)
         if not page_files:
@@ -602,7 +794,12 @@ def main():
                     preview_pages.append((candidates[index], original))
         timings[stage] = time.perf_counter() - stage_started
         stage, stage_started = "ENCODE", time.perf_counter()
-        conversion_summary = convert_pages(page_files, args.quality_mode, args.encoder_backend, args.resize_mode, args.page_workers)
+        emit_progress("ENCODING", 0, len([p for p in page_files if Path(p).suffix.lower() in {".jpg", ".jpeg"}]))
+        if args.prefetch_next and args.work_dir and perf.local_storage(work_root):
+            prefetch = perf.Prefetch(args.prefetch_next, work_root, args.prefetch_budget_mb)
+        elif args.prefetch_next:
+            print_result({"PREFETCH_NOTE": "Prefetch requires an explicitly chosen local fixed-drive temporary folder"})
+        conversion_summary = convert_pages(page_files, args.quality_mode, args.encoder_backend, args.resize_mode, args.page_workers, emit_progress)
         timings[stage] = time.perf_counter() - stage_started
         stage, stage_started = "REBUILD", time.perf_counter()
         updated_pages = walk_page_files(temp_dir)
@@ -611,12 +808,15 @@ def main():
         inject_comicinfo(temp_dir, args.comicinfo_path)
         inject_comicbook(temp_dir, args.comicbook_path)
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        emit_progress("REBUILDING")
         rebuild_output(temp_dir, output_path, args.rar_tool)
         timings[stage] = time.perf_counter() - stage_started
         stage, stage_started = "VALIDATE", time.perf_counter()
-        validate_output(output_path, args.archive_tool, temp_dir)
+        emit_progress("VALIDATING")
+        validate_output(output_path, args.archive_tool, temp_dir, args.page_workers)
         output_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
         keep_result, keep_message, savings_percent = evaluate_size_policy(source_size, output_size, args.size_policy)
+        keep_prefetch = True
         if not keep_result:
             if os.path.exists(output_path):
                 os.remove(output_path)
@@ -674,6 +874,7 @@ def main():
         })
         return 0
     except Exception as exc:
+        keep_prefetch = False
         print_result({
             "STATUS": "ERROR",
             "MESSAGE": str(exc),
@@ -682,10 +883,32 @@ def main():
         return 1
     finally:
         timings[stage] = time.perf_counter() - stage_started
+        emit_progress("CLEANUP")
         cleanup_started = time.perf_counter()
         shutil.rmtree(temp_dir, ignore_errors=True)
         if os.path.exists(temp_dir):
             print_result({"CLEANUP_WARNING": "Temporary work folder could not be fully removed: " + temp_dir})
+        if args.prefetch_record:
+            try:
+                perf.cleanup_cache(args.prefetch_record, work_root)
+                print_result({"PREFETCH_CLEANED_RECORD": args.prefetch_record})
+            except Exception as error:
+                print_result({"CLEANUP_WARNING": "Consumed cache needs review: " + str(error)})
+        if prefetch:
+            try:
+                record = prefetch.finish(keep_prefetch)
+                print_result({"PREFETCH_NEXT_READY": "Yes" if record else "No"})
+                if record:
+                    print_result({"PREFETCH_RECORD": record})
+                if prefetch.warning:
+                    print_result({"PREFETCH_NOTE": prefetch.warning})
+                elif not record:
+                    print_result({"PREFETCH_NOTE": "Next cache incomplete or discarded; normal source processing will be used"})
+            except Exception as error:
+                print_result({"CLEANUP_WARNING": "Prefetch cleanup needs review: " + str(error)})
+        if perf.TRACKER:
+            print_result(perf.TRACKER.finish())
+            perf.TRACKER = None
         timings["CLEANUP"] = time.perf_counter() - cleanup_started
         print_result({"TIME_" + key + "_SECONDS": f"{value:.3f}" for key, value in timings.items()})
         print_result({"TIME_TOTAL_SECONDS": f"{time.perf_counter() - started:.3f}", "PAGE_WORKERS": args.page_workers})

@@ -25,3 +25,5 @@ Use disposable/generated files. Include the action, quality, encoder, worker cou
 ## Evidence
 
 Include relevant report/error lines and, for a history-opening failure, Reports/history-diagnostic.log if present. Remove personal paths and private metadata. Do not upload copyrighted comic archives/pages. Say whether originals or recovery records remain after a failed replacement; keep those files available for inspection.
+
+For preview diagnostics, include the selected page/quality, zoom, whether the heatmap was enabled, and the measurement text. Say whether dimensions match; describe any known color profile without uploading private comic pages.

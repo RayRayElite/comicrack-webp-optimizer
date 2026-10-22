@@ -24,7 +24,7 @@ from System.IO import Directory, File, FileInfo, Path, SearchOption, FileAttribu
 from System.Security import SecurityElement
 from System.Text import Encoding, StringBuilder
 from System.Xml import XmlDocument
-from System.Windows.Forms import AnchorStyles, Application, Button, CheckBox, Clipboard, ComboBox, DialogResult, Form, FormBorderStyle, FormStartPosition, FolderBrowserDialog, Label, ListView, ListViewItem, MessageBox, MessageBoxButtons, MessageBoxIcon, ProgressBar, TextBox, View, Panel, TabControl, TabPage, DockStyle, AutoScaleMode, Timer, SplitContainer, PictureBox, PictureBoxSizeMode, FormWindowState, Keys, Control, ControlStyles
+from System.Windows.Forms import AnchorStyles, Application, Button, CheckBox, Clipboard, ComboBox, DialogResult, Form, FormBorderStyle, FormStartPosition, FolderBrowserDialog, Label, ListView, ListViewItem, MessageBox, MessageBoxButtons, MessageBoxIcon, ProgressBar, TextBox, View, Panel, TabControl, TabPage, DockStyle, AutoScaleMode, Timer, SplitContainer, PictureBox, PictureBoxSizeMode, FormWindowState, Keys, Control, ControlStyles, RichTextBox, RichTextBoxScrollBars
 
 
 # ===========================================================================
@@ -47,6 +47,7 @@ CBR_MODE_VALUES = ["Convert CBR sources to CBZ output", "Keep original CBR files
 SIZE_POLICY_VALUES = ["Only If Smaller", "At Least 3% Smaller", "Allow Up To 1% Growth", "Keep All Results"]
 TRIAL_QUALITY_LEVELS = ["Q60", "Q70", "Q75", "Q80", "Q90"]
 BENCHMARK_SAMPLE_LIMIT = 3
+CHECKPOINT_POLICY_VERSION = "jpeg-webp-1"
 _RUN_ACTIVE = False
 
 
@@ -156,26 +157,26 @@ def _find_archive_tool():
 
 
 def _find_python_tool():
-    """Locate a launchable Python 3 executable for the external helper."""
+    """Find Python 3.9+, without treating a Python 2 install as a valid worker."""
     for candidate in ["py", "python"]:
+        process = None
         try:
             info = ProcessStartInfo()
             info.FileName = candidate
-            info.Arguments = "--version"
-            info.UseShellExecute = False
-            info.RedirectStandardOutput = True
-            info.RedirectStandardError = True
-            info.CreateNoWindow = True
+            info.Arguments = "-3 --version" if candidate == "py" else "--version"
+            info.UseShellExecute, info.CreateNoWindow = False, True
+            info.RedirectStandardOutput = info.RedirectStandardError = True
             process = Process()
             process.StartInfo = info
-            process.Start()
-            process.StandardOutput.ReadToEnd()
-            process.StandardError.ReadToEnd()
-            process.WaitForExit()
-            if process.ExitCode == 0:
+            output, errors = _wait_for_process(process)
+            version = (output + errors).strip().split(" ")[-1].split(".")
+            if process.ExitCode == 0 and len(version) >= 2 and int(version[0]) == 3 and int(version[1]) >= 9:
                 return candidate
         except Exception:
             pass
+        finally:
+            if process is not None:
+                process.Dispose()
     return None
 
 
@@ -231,16 +232,31 @@ def _get_output_extension(result, options):
     return ".cbz"
 
 
-def _wait_for_process(process):
+def _wait_for_process(process, on_progress=None, on_started=None):
     """Drain stdout/stderr asynchronously while pumping WinForms events.
 
     Worker callbacks only append text; UI work stays on the calling thread.
     Never kill the child for a boundary-stop request: finish its active book."""
     output = StringBuilder()
     errors = StringBuilder()
+    pending_progress = System.Collections.Concurrent.ConcurrentQueue[System.String]()
+    def deliver_progress():
+        latest = None
+        while not pending_progress.IsEmpty:
+            ok, message = pending_progress.TryDequeue()
+            if ok:
+                latest = message
+        if latest is not None and on_progress is not None:
+            try:
+                on_progress(_safe_unicode(latest))
+            except Exception, ex:
+                errors.AppendLine("Progress display error: " + _safe_unicode(ex))
     def receive_output(sender, event):
         if event.Data is not None:
-            output.AppendLine(event.Data)
+            if event.Data.startswith("PROGRESS="):
+                pending_progress.Enqueue(event.Data[9:])
+            else:
+                output.AppendLine(event.Data)
     def receive_error(sender, event):
         if event.Data is not None:
             errors.AppendLine(event.Data)
@@ -249,9 +265,16 @@ def _wait_for_process(process):
     process.Start()
     process.BeginOutputReadLine()
     process.BeginErrorReadLine()
+    if on_started is not None:
+        try:
+            on_started(process)
+        except Exception, ex:
+            errors.AppendLine("Worker identity could not be recorded: " + _safe_unicode(ex))
     while not process.WaitForExit(100):
+        deliver_progress()
         Application.DoEvents()
     process.WaitForExit()  # Flush asynchronous output callbacks.
+    deliver_progress()
     Application.DoEvents()
     return _safe_unicode(output.ToString()), _safe_unicode(errors.ToString())
 
@@ -821,6 +844,12 @@ def _run_conversion_helper(python_tool, tool_path, result, options, book):
         _quote_argument(rar_tool),
         _quote_argument(options.get("encoder_backend", ENCODER_BACKEND_VALUES[0])),
         _quote_argument(options.get("resize_mode", RESIZE_MODE_VALUES[0])))
+    info.Arguments += " --resource-profile " + _quote_argument(options.get("resource_profile", "Normal"))
+    if options.get("_measure_resources", False):
+        info.Arguments += " --metrics"
+    for key in ["prefetch_next", "prefetch_record"]:
+        if options.get(key):
+            info.Arguments += " --" + key.replace("_", "-") + " " + _quote_argument(options[key])
     info.Arguments += " --page-workers " + _quote_argument(options.get("page_workers", "1"))
     info.Arguments += " --work-dir " + _quote_argument(options.get("work_dir", ""))
     if options.get("preview_dir", ""):
@@ -834,7 +863,10 @@ def _run_conversion_helper(python_tool, tool_path, result, options, book):
     try:
         process = Process()
         process.StartInfo = info
-        output_text, error_text = _wait_for_process(process)
+        progress = options.get("_progress_form")
+        callback = progress.update_archive_progress if progress is not None and hasattr(progress, "update_archive_progress") else None
+        started = (lambda child: _record_worker_started(_safe_unicode(result.get("file_path", "")), options, child)) if options.get("checkpoint_output_path") else None
+        output_text, error_text = _wait_for_process(process, callback, started)
 
         helper_result = _parse_helper_output(output_text)
         helper_result["SOURCE_SIGNATURE"] = source_signature
@@ -869,6 +901,8 @@ def _set_scan_custom_values(book, result):
         book.SetCustomValue(IMAGE_FORMAT_KEY, _safe_unicode(result.get("image_format", "")))
     except Exception:
         pass
+
+    _status_after_scan(book, result)
 
 
 def _set_converted_custom_values(book, final_path, helper_result):
@@ -1169,6 +1203,10 @@ def _build_conversion_report(results, conversion_results, tool_path, options):
     lines.append("Size Policy: " + _safe_unicode(options.get("size_policy", SIZE_POLICY_VALUES[0])))
     lines.append("Checkpoint Storage: " + Path.Combine(REPORT_DIR, "Checkpoints"))
     lines.append("Concurrent Pages: " + _safe_unicode(options.get("page_workers", "1")))
+    lines.append("PC Priority: " + _safe_unicode(options.get("resource_profile", "Normal")))
+    lines.append("Prefetch Requested: " + ("Yes (local work folder required; 256 MB limit)" if options.get("prefetch") else "No"))
+    lines.append("Prefetch Caches Used: " + str(len([r for r in conversion_results if r.get("PREFETCH_USED") == "Yes"])))
+    lines.append("Prefetch Next Caches Prepared: " + str(len([r for r in conversion_results if r.get("PREFETCH_NEXT_READY") == "Yes"])))
     lines.append("Resumed Completed Books: " + str(_get_skip_reason_count(conversion_results, "RESUMED")))
     lines.append("Temporary Work Folder: " + (_safe_unicode(options.get("work_dir", "")) or "Beside each source"))
     lines.append("Reports Beside Sources: " + ("Yes" if options.get("reports_beside_sources", False) else "No"))
@@ -1254,7 +1292,7 @@ def _build_conversion_report(results, conversion_results, tool_path, options):
                 _safe_unicode(conversion_result.get("COMICINFO_EMBEDDED", "Unknown")),
                 _safe_unicode(conversion_result.get("COMICBOOK_EMBEDDED", "Unknown"))))
         for key in sorted(conversion_result):
-            if key.startswith("TIME_") and key.endswith("_SECONDS"):
+            if (key.startswith("TIME_") and key.endswith("_SECONDS")) or key.startswith("PREFETCH_"):
                 lines.append("  " + key + ": " + _safe_unicode(conversion_result[key]))
         if conversion_result.get("CHECKPOINT_WARNING"):
             lines.append("  Checkpoint warning: " + _safe_unicode(conversion_result["CHECKPOINT_WARNING"]))
@@ -1545,7 +1583,7 @@ def _ui_label(parent, text, x, y, width, height=24, heading=False):
 def _ui_combo(parent, title, values, y):
     """Build an anchored, selection-only options dropdown."""
     _ui_label(parent, title, 24, y + 4, 172)
-    combo = ComboBox()
+    combo = _new_combo()
     combo.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
     combo.Items.AddRange(System.Array[System.Object](values))
     combo.SelectedIndex = 0
@@ -1563,6 +1601,7 @@ class OptionsForm(Form):
     """User choices and history access; save preferences only when starting a run."""
     def __init__(self):
         self._history_opening = False
+        self._selection_books = []
         self.Text = "WebP Optimizer"
         self.Font = Font("Segoe UI", 9.0)
         self.AutoScaleMode = AutoScaleMode.Font
@@ -1572,7 +1611,7 @@ class OptionsForm(Form):
         self.BackColor = Color.White
         _ui_label(self, "Make room for more comics.", 24, 18, 700, 34, True)
         _ui_label(self, "Choose your workflow, then tune quality and storage. Only selected books are processed.", 24, 56, 700, 30)
-        self._tabs = TabControl()
+        self._tabs = _new_tabs()
         self._tabs.Location = Point(16, 96)
         self._tabs.Size = Size(728, 508)
         self._tabs.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
@@ -1580,7 +1619,8 @@ class OptionsForm(Form):
         basic = TabPage("Workflow & quality")
         advanced = TabPage("Storage & advanced")
         performance = TabPage("Performance & resume")
-        for page in [basic, advanced, performance]:
+        tools_page = TabPage("Tools & recovery")
+        for page in [basic, advanced, performance, tools_page]:
             page.Size = Size(720, 480)
             page.BackColor = Color.White
             page.AutoScroll = True
@@ -1590,13 +1630,13 @@ class OptionsForm(Form):
         self._quality_note = _ui_label(basic, "", 204, 120, 480, 85)
         self._resize_combo = _ui_combo(basic, "Page dimensions", RESIZE_MODE_VALUES, 218)
         self._size_policy_combo = _ui_combo(basic, "Keep converted result", SIZE_POLICY_VALUES, 272)
-        self._backup_checkbox = CheckBox()
+        self._backup_checkbox = _new_checkbox()
         self._backup_checkbox.Text = "Keep an original backup after replacement"
         self._backup_checkbox.Checked = True
         self._backup_checkbox.Location = Point(204, 326)
         self._backup_checkbox.Size = Size(490, 26)
         basic.Controls.Add(self._backup_checkbox)
-        self._preview_checkbox = CheckBox()
+        self._preview_checkbox = _new_checkbox()
         self._preview_checkbox.Text = "Keep preview pages for visual comparison (uses extra space)"
         self._preview_checkbox.Location = Point(204, 326)
         self._preview_checkbox.Size = Size(490, 32)
@@ -1619,22 +1659,54 @@ class OptionsForm(Form):
         advanced.Controls.Add(browse)
         _ui_label(advanced, "Leave blank to work beside each source. Choose a local folder for extraction and encoding. Final archives stay beside their source.", 24, 216, 660, 52)
         _ui_label(advanced, "Run reports", 24, 290, 650, 28, True)
-        self._reports_checkbox = CheckBox()
+        self._reports_checkbox = _new_checkbox()
         self._reports_checkbox.Text = "Also save this run's report beside the selected source files"
         self._reports_checkbox.Location = Point(24, 330)
         self._reports_checkbox.Size = Size(660, 28)
         advanced.Controls.Add(self._reports_checkbox)
         _ui_label(advanced, "A full report is copied to each distinct source folder. A central copy is always kept in the plugin's Reports folder, including benchmark runs.", 24, 368, 660, 58)
-        self._workers_combo = _ui_combo(performance, "Concurrent pages", ["1", "2", "4"], 24)
-        _ui_label(performance, "1 uses least RAM. Try 2 or 4 for faster encoding; books remain sequential. Larger pages need more memory for each worker.", 24, 66, 660, 58)
-        self._resume_checkbox = CheckBox()
+        self._workers_combo = _ui_combo(performance, "Concurrent pages", ["1", "2", "4", "6", "8", "10", "12"], 24)
+        self._profile_combo = _ui_combo(performance, "PC priority", ["Normal", "Background"], 68)
+        _ui_label(performance, "More workers use more RAM. Background lowers CPU priority; it does not limit disk/network traffic. Books still finish one at a time.", 24, 110, 660, 42)
+        benchmark = Button()
+        benchmark.Text = "Benchmark worker counts"
+        benchmark.Location, benchmark.Size = Point(24, 160), Size(220, 34)
+        benchmark.Click += self._show_performance
+        performance.Controls.Add(benchmark)
+        _ui_label(performance, "Tests 1, 2, 4, 6, 8, 10 and 12 at the chosen quality on up to 3 JPEG books. Temporary outputs are deleted; originals and library tags stay unchanged.", 260, 158, 424, 48)
+        self._prefetch_checkbox = _new_checkbox()
+        self._prefetch_checkbox.Text = "Prefetch one next archive into local temporary storage (up to 256 MB)"
+        self._prefetch_checkbox.Location, self._prefetch_checkbox.Size = Point(24, 222), Size(660, 30)
+        performance.Controls.Add(self._prefetch_checkbox)
+        _ui_label(performance, "Optional; requires a local temporary folder. Adds read traffic during encoding. Larger books use normal processing. Disable if the source drive is busy.", 24, 258, 660, 44)
+        self._resume_checkbox = _new_checkbox()
         self._resume_checkbox.Text = "Resume completed books with matching settings and unchanged files"
-        self._resume_checkbox.Location = Point(24, 142)
-        self._resume_checkbox.Size = Size(660, 30)
+        self._resume_checkbox.Location, self._resume_checkbox.Size = Point(24, 320), Size(660, 30)
         performance.Controls.Add(self._resume_checkbox)
-        _ui_label(performance, "After a stop or restart, select the remaining/original batch with the same conversion settings. Completed books are recognized from local checkpoints; no old files are automatically selected.", 24, 190, 660, 76)
-        _ui_label(performance, "Checkpoints are saved before work and after each successful book. Interrupted outputs need inspection. Quality comparisons always run fresh. Changing worker count or temporary storage does not invalidate completed work.", 24, 284, 660, 90)
-        _ui_label(performance, "For NAS books, choose local temporary storage on the Storage & advanced tab to reduce network file operations. Final output still stays beside the source.", 24, 388, 660, 66)
+        _ui_label(performance, "Select the original batch again to resume. Pending outputs need review. Worker count, priority and temporary storage do not invalidate completed work.", 24, 358, 660, 42)
+        self._awake_checkbox = _new_checkbox()
+        self._awake_checkbox.Text = "Keep PC awake while processing (the screen may turn off)"
+        self._awake_checkbox.Location, self._awake_checkbox.Size = Point(24, 424), Size(660, 36)
+        performance.Controls.Add(self._awake_checkbox)
+        _ui_label(tools_page, "Check your setup", 24, 24, 660, 30, True)
+        _ui_label(tools_page, "Check the selected workflow's tools and temporary storage using disposable files. Choose a conversion action to check Python, Pillow and the encoder.", 24, 70, 660, 66)
+        check_setup = Button()
+        check_setup.Text = "Check setup"
+        check_setup.Location, check_setup.Size = Point(24, 144), Size(180, 34)
+        check_setup.Click += self._show_setup
+        tools_page.Controls.Add(check_setup)
+        _ui_label(tools_page, "Interrupted work", 24, 230, 660, 30, True)
+        _ui_label(tools_page, "Review pending attempts, check source/output readability and open their folders. Allow retry only after the files are resolved and the prior helper has stopped.", 24, 274, 660, 74)
+        recovery = Button()
+        recovery.Text = "Review interrupted work"
+        recovery.Location, recovery.Size = Point(24, 364), Size(230, 34)
+        recovery.Click += self._show_recovery
+        tools_page.Controls.Add(recovery)
+        self._dark_checkbox = _new_checkbox()
+        self._dark_checkbox.Text = "Dark mode"
+        self._dark_checkbox.Location, self._dark_checkbox.Size = Point(24, 444), Size(660, 30)
+        self._dark_checkbox.CheckedChanged += self._theme_changed
+        tools_page.Controls.Add(self._dark_checkbox)
         self._settings_note = _ui_label(advanced, "", 24, 430, 660, 44)
         reset = Button()
         reset.Text = "Restore defaults"
@@ -1681,10 +1753,13 @@ class OptionsForm(Form):
             values["run_mode"] = "Test savings & quality"
         if migrated_encoder:
             values["encoder_backend"] = ENCODER_BACKEND_VALUES[0]
-        for key, control in [("run_mode", self._mode_combo), ("quality_mode", self._quality_combo), ("encoder_backend", self._encoder_combo), ("resize_mode", self._resize_combo), ("cbr_mode", self._cbr_combo), ("size_policy", self._size_policy_combo), ("page_workers", self._workers_combo)]:
+        for key, control in [("run_mode", self._mode_combo), ("quality_mode", self._quality_combo), ("encoder_backend", self._encoder_combo), ("resize_mode", self._resize_combo), ("cbr_mode", self._cbr_combo), ("size_policy", self._size_policy_combo), ("page_workers", self._workers_combo), ("resource_profile", self._profile_combo)]:
             control.SelectedIndex = 0
             if values.get(key, "") in list(control.Items):
                 control.SelectedItem = values[key]
+        self._prefetch_checkbox.Checked = values.get("prefetch", "False").lower() == "true"
+        self._dark_checkbox.Checked = values.get("dark_mode", "False").lower() == "true"
+        self._awake_checkbox.Checked = values.get("keep_awake", "False").lower() == "true"
         self._resume_checkbox.Checked = values.get("resume_completed", "True").lower() == "true"
         self._backup_checkbox.Checked = values.get("create_backup", "True").lower() == "true"
         self._preview_checkbox.Checked = values.get("keep_test_previews", "False").lower() == "true"
@@ -1692,50 +1767,38 @@ class OptionsForm(Form):
         self._work_text.Text = values.get("work_dir", "")
         self._settings_note.Text = warning or ("Previous encoder choice updated to explicit ImageMagick. No automatic fallback. Settings save when you start a run." if migrated_encoder else "Settings are remembered when you start a run. Selected encoders never fall back automatically.")
 
+    def _theme_changed(self, sender, event):
+        _set_ui_theme(bool(self._dark_checkbox.Checked), self)
+
     def _reset_settings(self, sender, event):
         self._restore_settings(True)
         self._apply_mode_state()
 
+    def _show_performance(self, sender, event):
+        # Dispose options first, just as history does; avoid nested modal stacks.
+        self.DialogResult = DialogResult.Yes
+        self.Close()
+
     def _show_history(self, sender, event):
-        """Queue one modal dialog, avoiding nested host click stacks and re-entry."""
+        """Return to the controller before opening history: never nest this dialog."""
         if self._history_opening:
             return
         self._history_opening = True
-        try:
-            _history_trace("History button queued")
-            self.BeginInvoke(System.Windows.Forms.MethodInvoker(self._open_history_dialog))
-        except Exception, ex:
-            self._history_opening = False
-            _history_trace("History scheduling failed: " + _safe_unicode(ex))
-            MessageBox.Show("Could not schedule run history: " + _safe_unicode(ex), "WebP Optimizer")
+        _history_trace("History requested; closing options before opening history")
+        self.DialogResult = DialogResult.Retry
+        self.Close()
 
-    def _open_history_dialog(self):
-        """Run after the original click stack unwinds; keep failures inside the UI."""
-        history = None
-        try:
-            if self.IsDisposed or self.Disposing:
-                return
-            _history_trace("Constructing history dialog")
-            history = RunHistoryForm()
-            _show_owned_dialog(history, self)
-            if history.retest is not None:
-                values = history.retest["options"]
-                for key, control in [("encoder_backend", self._encoder_combo), ("cbr_mode", self._cbr_combo), ("page_workers", self._workers_combo)]:
-                    value = values.get(key, "")
-                    if value in list(control.Items):
-                        control.SelectedItem = value
-                self._work_text.Text = values.get("work_dir", "")
-                self._mode_combo.SelectedItem = "Test savings & quality"
-                self._preview_checkbox.Checked = True
-                self._apply_mode_state()
-                self._action_note.Text = "New comparison prepared from recorded settings. Review your current ComicRack selection before Start run; old source files may have changed. No conversion starts automatically."
-        except Exception, ex:
-            _history_trace("History opening failed: " + _safe_unicode(ex))
-            MessageBox.Show("Could not open run history: " + _safe_unicode(ex) + "\nSee Reports/history-diagnostic.log.", "WebP Optimizer")
-        finally:
-            if history is not None:
-                history.Dispose()
-            self._history_opening = False
+    def _restore_draft(self, values):
+        """Restore unsaved choices when returning from history, without writing settings."""
+        for key, control in [("run_mode", self._mode_combo), ("quality_mode", self._quality_combo), ("encoder_backend", self._encoder_combo), ("resize_mode", self._resize_combo), ("cbr_mode", self._cbr_combo), ("size_policy", self._size_policy_combo), ("page_workers", self._workers_combo), ("resource_profile", self._profile_combo)]:
+            if values.get(key, "") in list(control.Items):
+                control.SelectedItem = values[key]
+        for key, control in [("create_backup", self._backup_checkbox), ("keep_test_previews", self._preview_checkbox), ("reports_beside_sources", self._reports_checkbox), ("resume_completed", self._resume_checkbox), ("keep_awake", self._awake_checkbox), ("dark_mode", self._dark_checkbox), ("prefetch", self._prefetch_checkbox)]:
+            if key in values:
+                control.Checked = bool(values[key])
+        self._work_text.Text = values.get("work_dir", "")
+        self._apply_mode_state()
+        _set_ui_theme(bool(self._dark_checkbox.Checked), self)
 
     def _browse_work(self, sender, event):
         dialog = FolderBrowserDialog()
@@ -1780,8 +1843,9 @@ class OptionsForm(Form):
     def _mode_changed(self, sender, event):
         self._apply_mode_state()
 
-    def _save(self, sender, event):
-        self.options = {
+    def _collect_options(self):
+        """Read controls without saving settings or starting a run."""
+        return {
             "run_mode": _safe_unicode(self._mode_combo.SelectedItem),
             "quality_mode": _safe_unicode(self._quality_combo.SelectedItem),
             "encoder_backend": _safe_unicode(self._encoder_combo.SelectedItem),
@@ -1793,10 +1857,35 @@ class OptionsForm(Form):
             "reports_beside_sources": bool(self._reports_checkbox.Checked),
             "keep_test_previews": bool(self._preview_checkbox.Checked),
             "page_workers": _safe_unicode(self._workers_combo.SelectedItem),
+            "resource_profile": _safe_unicode(self._profile_combo.SelectedItem),
+            "prefetch": bool(self._prefetch_checkbox.Checked),
+            "dark_mode": bool(self._dark_checkbox.Checked),
+            "keep_awake": bool(self._awake_checkbox.Checked),
             "resume_completed": bool(self._resume_checkbox.Checked),
         }
+
+    def _show_setup(self, sender, event):
+        options = self._collect_options()
+        if self._selection_books and not options.get("work_dir"):
+            options["_setup_default_work_dir"] = Path.GetDirectoryName(_safe_unicode(getattr(self._selection_books[0], "FilePath", "")))
+        form = SetupForm(options)
+        try:
+            _show_owned_dialog(form, self)
+        finally:
+            form.Dispose()
+
+    def _show_recovery(self, sender, event):
+        form = RecoveryForm(self._selection_books)
+        try:
+            _show_owned_dialog(form, self)
+        finally:
+            form.Dispose()
+
+    def _save(self, sender, event):
+        self.options = self._collect_options()
+        self.options["_show_preflight"] = True
         remembered = dict(_load_settings()[0])
-        remembered.update(self.options)
+        remembered.update(dict((key, value) for key, value in self.options.items() if not key.startswith("_")))
         remembered["create_backup"] = bool(self._backup_checkbox.Checked)
         try:
             _save_settings(remembered)
@@ -1806,6 +1895,7 @@ class OptionsForm(Form):
         self.Close()
 
     def _cancel(self, sender, event):
+        _set_ui_theme(_load_settings()[0].get("dark_mode", "False").lower() == "true", self)
         self.DialogResult = DialogResult.Cancel
         self.Close()
 
@@ -1834,7 +1924,7 @@ class ProgressForm(Form):
         self.AutoScaleMode = AutoScaleMode.Font
         self.BackColor = Color.White
         self.Text = "WebP Optimizer - Processing selection"
-        self.ClientSize = Size(700, 386)
+        self.ClientSize = Size(700, 414)
         self.FormBorderStyle = FormBorderStyle.FixedDialog
         self.StartPosition = FormStartPosition.CenterParent
         self.MinimizeBox = True
@@ -1842,17 +1932,18 @@ class ProgressForm(Form):
         self._status_label = _ui_label(self, "Preparing your selection", 24, 22, 650, 34, True)
         self._detail_label = _ui_label(self, "", 24, 68, 650, 48)
         self._detail_label.AutoEllipsis = True
-        self._count_label = _ui_label(self, "", 24, 126, 650, 26)
+        self._stage_label = _ui_label(self, "", 24, 120, 650, 24)
+        self._count_label = _ui_label(self, "", 24, 150, 650, 26)
         self._progress_bar = ProgressBar()
-        self._progress_bar.Location = Point(24, 164)
+        self._progress_bar.Location = Point(24, 188)
         self._progress_bar.Size = Size(650, 18)
         self.Controls.Add(self._progress_bar)
-        self._time_label = _ui_label(self, "Elapsed 00:00", 24, 200, 650, 26)
-        self._rate_label = _ui_label(self, "Speed and rough ETA appear after the first converted book.", 24, 232, 650, 42)
-        self._stop_note = _ui_label(self, "Stopping finishes the active book, including validation and replacement. Remaining books stay untouched.", 24, 280, 650, 42)
+        self._time_label = _ui_label(self, "Elapsed 00:00", 24, 224, 650, 26)
+        self._rate_label = _ui_label(self, "Speed and rough ETA appear after the first converted book.", 24, 256, 650, 42)
+        self._stop_note = _ui_label(self, "Stopping finishes the active book, including validation and replacement. Remaining books stay untouched.", 24, 304, 650, 42)
         self._stop_button = Button()
         self._stop_button.Text = "Stop after current book"
-        self._stop_button.Location = Point(450, 338)
+        self._stop_button.Location = Point(450, 366)
         self._stop_button.Size = Size(224, 32)
         self._stop_button.Click += self._request_stop
         self.Controls.Add(self._stop_button)
@@ -1977,6 +2068,24 @@ class ProgressForm(Form):
             minutes = int(seconds / 60)
             self._rate_label.Text = "{0:.2f} source MB/s | Rough ETA {1}h {2:02d}m ({3}). Skips and book complexity affect estimates.".format(rate / (1024 * 1024), minutes // 60, minutes % 60, basis)
 
+    def update_archive_progress(self, message):
+        """Apply worker records on the UI thread; never change batch/quality counts."""
+        parts = message.split("|")
+        if len(parts) != 3:
+            return
+        try:
+            completed, total = int(parts[1]), int(parts[2])
+        except ValueError:
+            return
+        labels = {"EXTRACTING": "Extracting archive", "ENCODING": "Encoding pages", "REBUILDING": "Building converted archive", "VALIDATING": "Validating archive and pages", "CLEANUP": "Cleaning temporary files", "REPLACING": "Replacing original and updating library"}
+        if parts[0] not in labels:
+            return
+        text = labels[parts[0]]
+        if parts[0] == "ENCODING" and total > 0:
+            text = "Encoding page {0} of {1}".format(max(0, min(completed, total)), total)
+        self._stage_label.Text = text
+        self.Refresh()
+
     def update_state(self, percent, status_text, detail_text, current=0, total=0, completed=0):
         if current != self._completed + 1 or status_text.startswith("Converting"):
             self._active_started = self._clock.Elapsed.TotalSeconds
@@ -1984,6 +2093,7 @@ class ProgressForm(Form):
         self._total = total
         self._unit = "books scanned" if "Scanning" in status_text else "books processed"
         self._progress_bar.Value = max(0, min(100, int(percent)))
+        self._stage_label.Text = "Reading archive listing" if "Scanning" in status_text else "Preparing this book"
         self._status_label.Text = _safe_unicode(status_text)
         self._detail_label.Text = _safe_unicode(detail_text)
         self._count_label.Text = "Book {0} of {1}  |  {2}% of batch complete".format(current, total, self._progress_bar.Value)
@@ -2039,6 +2149,11 @@ class QualityPreviewForm(Form):
         self._fullscreen = False
         self._scale = 1.0
         self._entries = []
+        self._difference = None
+        self._analysis_worker = None
+        self._analysis_timer = Timer()
+        self._analysis_timer.Interval = 75
+        self._analysis_timer.Tick += self._analysis_completed
         grouped = {}
         for manifest in Directory.GetFiles(preview_folder, "preview.xml", SearchOption.AllDirectories):
             document = XmlDocument()
@@ -2066,7 +2181,7 @@ class QualityPreviewForm(Form):
         toolbar.Height = 112
         self.Controls.Add(toolbar)
         _ui_label(toolbar, "Compare against the original", 20, 12, 650, 28, True)
-        self._page = ComboBox()
+        self._page = _new_combo()
         self._page.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
         self._page.Location = Point(20, 56)
         self._page.Size = Size(600, 30)
@@ -2074,12 +2189,12 @@ class QualityPreviewForm(Form):
         for entry in self._entries:
             self._page.Items.Add(entry["title"])
         toolbar.Controls.Add(self._page)
-        self._quality = ComboBox()
+        self._quality = _new_combo()
         self._quality.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
         self._quality.Location = Point(636, 56)
         self._quality.Size = Size(104, 30)
         toolbar.Controls.Add(self._quality)
-        self._zoom = ComboBox()
+        self._zoom = _new_combo()
         self._zoom.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
         self._zoom.Location = Point(756, 56)
         self._zoom.Size = Size(190, 30)
@@ -2095,9 +2210,26 @@ class QualityPreviewForm(Form):
         toolbar.Controls.Add(full)
         footer = Panel()
         footer.Dock = DockStyle.Bottom
-        footer.Height = 44
+        footer.Height = 166
         self.Controls.Add(footer)
         _ui_label(footer, "Wheel: scroll both | Ctrl+wheel: zoom | Shift+wheel: horizontal | 100%: actual pixels | F11: full screen | Esc: return", 20, 10, 1280)
+        self._analyze = Button()
+        self._analyze.Text = "Analyze differences"
+        self._analyze.Location = Point(20, 40)
+        self._analyze.Size = Size(180, 30)
+        self._analyze.Click += self._analyze_difference
+        footer.Controls.Add(self._analyze)
+        self._show_difference = CheckBox()
+        self._show_difference.Text = "Show amplified difference (8x)"
+        self._show_difference.Location = Point(220, 42)
+        self._show_difference.Size = Size(310, 28)
+        self._show_difference.Enabled = False
+        self._show_difference.CheckedChanged += self._toggle_difference
+        footer.Controls.Add(self._show_difference)
+        self._measurements = _ui_label(footer, "Optional full-page RGB measurements. Black heatmap = identical; orange = difference, amplified 8x.", 20, 77, 1300, 28)
+        self._measurements.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
+        self._pixel_reading = _ui_label(footer, "Hover either image to inspect matching full-resolution pixels. Values use the color-managed display RGB space.", 20, 108, 1300, 42)
+        self._pixel_reading.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
         self._split = SplitContainer()
         self._split.Size = Size(1400, 740)
         self._split.SplitterDistance = 698
@@ -2125,6 +2257,7 @@ class QualityPreviewForm(Form):
             picture.Location = Point(0, 0)
             picture.SizeMode = PictureBoxSizeMode.StretchImage
             panel.Controls.Add(picture)
+            picture.MouseMove += self._inspect_pixel
             picture.MouseEnter += self._focus_preview
             panel.MouseEnter += self._focus_preview
             self._captions.append(caption)
@@ -2153,6 +2286,20 @@ class QualityPreviewForm(Form):
         self._load_pair(None, None)
 
     def _release_images(self, sender, event):
+        # A running job owns independent snapshots. Completion disposes its result
+        # if this form was closed; the worker never touches a live UI bitmap.
+        self._analysis_timer.Stop()
+        if self._analysis_worker is not None:
+            self._analysis_worker.Dispose()
+            self._analysis_worker = None
+        if sender is self or self.IsDisposed or self.Disposing:
+            self._analysis_timer.Dispose()
+        self._show_difference.Checked = False
+        self._show_difference.Enabled = False
+        if self._difference is not None:
+            self._difference.Dispose()
+            self._difference = None
+        self._measurements.Text = "Analyze this page for full-resolution RGB differences (not a quality percentage)."
         for picture in self._pictures:
             picture.Image = None
         for image in self._images:
@@ -2177,12 +2324,77 @@ class QualityPreviewForm(Form):
             reduction = 100.0 * (entry["original_bytes"] - entry["webp_bytes"]) / entry["original_bytes"]
             self._captions[0].Text = "Original JPEG  |  " + _format_size(entry["original_bytes"])
             self._captions[1].Text = quality + " WebP  |  " + _format_size(entry["webp_bytes"]) + "  |  {0:.1f}% reduction".format(reduction)
+            self._converted_caption = self._captions[1].Text
+            self._pixel_reading.Text = "Hover either image to inspect matching color-managed RGB pixels."
             self._resize_images(None, None)
             for panel in self._panels:
                 panel.AutoScrollPosition = Point(0, 0)
         except Exception, ex:
             self._release_images(None, None)
             self._captions[1].Text = "Preview could not be loaded: " + _safe_unicode(ex)
+
+    def _inspect_pixel(self, sender, event):
+        if len(self._images) != 2:
+            return
+        x = min(self._images[0].Width - 1, max(0, int(event.X * self._images[0].Width / float(sender.Width))))
+        y = min(self._images[0].Height - 1, max(0, int(event.Y * self._images[0].Height / float(sender.Height))))
+        if self._images[0].Size != self._images[1].Size:
+            self._pixel_reading.Text = "Pixel inspection requires matching image dimensions."
+            return
+        a, b = [image.GetPixel(x, y) for image in self._images]
+        self._pixel_reading.Text = "Pixel ({0}, {1}) | Original RGB ({2}, {3}, {4}) | WebP RGB ({5}, {6}, {7}) | Change ({8:+d}, {9:+d}, {10:+d})".format(x, y, a.R, a.G, a.B, b.R, b.G, b.B, int(b.R)-a.R, int(b.G)-a.G, int(b.B)-a.B)
+
+    def _toggle_difference(self, sender, event):
+        if len(self._images) != 2:
+            return
+        showing = self._show_difference.Checked and self._difference is not None
+        self._pictures[1].Image = self._difference.Heatmap if showing else self._images[1]
+        self._captions[1].Text = "DIFFERENCE: maximum RGB channel change x8 (clipped); black = identical" if showing else self._converted_caption
+
+    def _analyze_difference(self, sender, event):
+        if len(self._images) != 2 or self._analysis_worker is not None:
+            return
+        if self._images[0].Size != self._images[1].Size:
+            self._measurements.Text = "Analysis requires matching dimensions; resized pages are not measured."
+            return
+        if long(self._images[0].Width) * self._images[0].Height > 16000000:
+            self._measurements.Text = "Page exceeds the 16-million-pixel analysis memory limit."
+            return
+        if self._difference is not None:
+            self._show_difference.Checked = True
+            return
+        try:
+            job_type = _NATIVE_TYPE.Assembly.GetType("WebPOptimizerRuntime.PreviewDifferenceJob")
+            self._analysis_worker = System.Activator.CreateInstance(job_type)
+            self._analysis_worker.Start(self._images[0], self._images[1])
+        except Exception, ex:
+            if self._analysis_worker is not None:
+                self._analysis_worker.Dispose()
+                self._analysis_worker = None
+            self._measurements.Text = "Analysis could not start: " + _safe_unicode(ex)
+            return
+        self._analyze.Enabled = self._page.Enabled = self._quality.Enabled = False
+        self._measurements.Text = "Analyzing full-resolution pixels... You can still zoom and scroll."
+        self._analysis_timer.Start()
+
+    def _analysis_completed(self, sender, event):
+        # WinForms Timer runs on the UI thread even in an embedded host without
+        # a SynchronizationContext. C# owns and cleans all worker snapshots.
+        job = self._analysis_worker
+        if job is None or not job.Done:
+            return
+        self._analysis_timer.Stop()
+        self._analysis_worker = None
+        self._analyze.Enabled = self._page.Enabled = self._quality.Enabled = True
+        if job.Error:
+            self._measurements.Text = "Analysis failed: " + _safe_unicode(job.Error)
+            job.Dispose()
+            return
+        self._difference = job.TakeResult()
+        job.Dispose()
+        d = self._difference
+        self._measurements.Text = "RGB /255: mean change {0:.3f} | RMS {1:.3f} | max {2} | brightness shift {3:+.3f} | changed {4:.2f}% (not visibility)".format(d.MeanAbsolute, d.RootMeanSquare, d.MaximumChannelDifference, d.BrightnessShift, d.ChangedPercent)
+        self._show_difference.Enabled = True
 
     def _resize_images(self, sender, event):
         if not self._images:
@@ -2270,23 +2482,29 @@ class QualityPreviewForm(Form):
 # [P16] History browser and explicit preview deletion
 # ===========================================================================
 def _history_trace(message):
-    """Keep a bounded last-stage diagnostic for host-specific history failures."""
+    """Bounded append log: retain the actual sequence and distinguish test hosts."""
+    process = None
     try:
         _ensure_directory(REPORT_DIR)
-        _write_text_file(Path.Combine(REPORT_DIR, "history-diagnostic.log"),
-                         _safe_unicode(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")) + " " + message)
+        path = Path.Combine(REPORT_DIR, "history-diagnostic.log")
+        if File.Exists(path) and FileInfo(path).Length > 65536:
+            _write_text_file(path, File.ReadAllText(path)[-32768:])
+        process = Process.GetCurrentProcess()
+        line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + " [" + process.ProcessName + " pid=" + str(process.Id) + "] " + message
+        File.AppendAllText(path, line + "\r\n", Encoding.UTF8)
     except Exception:
-        pass  # Diagnostics must never prevent opening a report.
+        pass
+    finally:
+        if process is not None:
+            process.Dispose()
 
 
 def _show_owned_dialog(dialog, owner):
     """Pass a concrete CLR window owner across the IronPython modal boundary."""
-    native_owner = System.Windows.Forms.NativeWindow()
-    native_owner.AssignHandle(owner.Handle)
-    try:
-        return dialog.ShowDialog(native_owner)
-    finally:
-        native_owner.ReleaseHandle()  # Detach; never destroy the owner's window.
+    owner_type = _NATIVE_TYPE.Assembly.GetType("WebPOptimizerRuntime.WindowOwner")
+    native_owner = System.Activator.CreateInstance(owner_type, System.Array[System.Object]([owner.Handle]))
+    return dialog.ShowDialog(native_owner)
+
 
 
 class RunHistoryForm(Form):
@@ -2304,7 +2522,7 @@ class RunHistoryForm(Form):
         self.StartPosition = FormStartPosition.CenterParent
         _ui_label(self, "Your previous runs", 24, 20, 1100, 32, True)
         _ui_label(self, "Reopen results or retained previews. Reviewing a historical report preserves previews by default.", 24, 62, 1100, 30)
-        self._list = ListView()
+        self._list = _new_listview()
         self._list.Location = Point(24, 108)
         self._list.Size = Size(1132, 420)
         self._list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
@@ -2518,7 +2736,7 @@ class ReportForm(Form):
         if "Report storage warnings" in self._report_text:
             note = "Some source-folder reports could not be saved. The central report is available; see Technical report for details."
         _ui_label(self, note if not analyzed else "Open Technical report for individual format counts and scan notes.", 24, 184, 1000, 26 if trial_mode and summary.get("Preview Folder", "") else 46)
-        self._tabs = TabControl()
+        self._tabs = _new_tabs()
         self._tabs.Location = Point(16, 240)
         self._tabs.Size = Size(1028, 400)
         self._tabs.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
@@ -2527,7 +2745,7 @@ class ReportForm(Form):
         technical = TabPage("Technical report")
         self._tabs.TabPages.Add(books)
         self._tabs.TabPages.Add(technical)
-        listing = ListView()
+        listing = _new_listview()
         listing.Dock = DockStyle.Fill
         listing.View = View.Details
         listing.FullRowSelect = True
@@ -2563,18 +2781,19 @@ class ReportForm(Form):
             item.SubItems.Add(record.get("Notes", ""))
             listing.Items.Add(item)
         books.Controls.Add(listing)
-        self._report_box = TextBox()
+        self._report_box = RichTextBox()
         self._report_box.Dock = DockStyle.Fill
         self._report_box.Multiline = True
         self._report_box.ReadOnly = True
-        self._report_box.ScrollBars = System.Windows.Forms.ScrollBars.Both
-        self._report_box.WordWrap = False
+        self._report_box.ScrollBars = RichTextBoxScrollBars.Both
+        self._report_box.WordWrap = True
         self._report_box.Font = Font("Consolas", 9.0)
         self._report_box.Text = self._report_text
         technical.Controls.Add(self._report_box)
+        _add_report_reader(self, technical)
         if summary.get("Preview Folder", ""):
             self._preview_folder = summary["Preview Folder"]
-            self._delete_previews_checkbox = CheckBox()
+            self._delete_previews_checkbox = _new_checkbox()
             self._delete_previews_checkbox.Text = "Delete this run's preview images when closing this results window"
             self._delete_previews_checkbox.Checked = False if self._historical else _load_settings()[0].get("delete_test_previews_on_close", "True").lower() == "true"
             self._delete_previews_checkbox.Location = Point(24, 212)
@@ -2679,12 +2898,15 @@ def _checkpoint_hash(text):
 
 
 def _checkpoint_path(source, options):
-    """Separate records by conversion policy and implementation revision."""
+    """Separate records by conversion intent and an explicit compatibility version."""
     defaults = {"run_mode": "Create WebP Copies", "quality_mode": QUALITY_MODE_VALUES[0],
                 "encoder_backend": ENCODER_BACKEND_VALUES[0], "resize_mode": RESIZE_MODE_VALUES[0],
                 "cbr_mode": CBR_MODE_VALUES[0], "size_policy": SIZE_POLICY_VALUES[0], "create_backup": False}
-    policy = "\n".join([key + "=" + _safe_unicode(options.get(key, defaults[key])) for key in sorted(defaults)])
-    revision = _checkpoint_signature(HELPER_SCRIPT) + "|" + _checkpoint_signature(Path.Combine(SCRIPT_DIR, "WebPOptimizer.py"))
+    values = dict((key, _safe_unicode(options.get(key, defaults[key]))) for key in defaults)
+    values["quality_mode"] = "".join(c for c in values["quality_mode"] if c.isdigit()) or "80"
+    values["encoder_backend"] = values["encoder_backend"].split(" (")[0].lower()
+    policy = "\n".join([key + "=" + values[key] for key in sorted(defaults)])
+    revision = "policy:" + CHECKPOINT_POLICY_VERSION
     folder = Path.Combine(Path.Combine(REPORT_DIR, "Checkpoints"), _checkpoint_hash(policy + "\n" + revision))
     return Path.Combine(folder, _checkpoint_hash(Path.GetFullPath(source).lower()) + ".xml")
 
@@ -2709,12 +2931,13 @@ def _write_book_checkpoint(result, options, output_path, state, conversion=None)
     root = document.CreateElement("Checkpoint")
     document.AppendChild(root)
     root.SetAttribute("policyRecord", _checkpoint_path(source, options))
-    for key, value in [("version", "1"), ("state", state), ("source", source),
+    for key, value in [("version", "2"), ("compatibility", CHECKPOINT_POLICY_VERSION), ("state", state), ("source", source),
                        ("sourceSignature", source_signature), ("output", output_path),
                        ("outputSignature", _checkpoint_signature(output_path)),
                        ("updated", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))]:
         root.SetAttribute(key, _safe_unicode(value))
-    for name, values in [("Scan", result), ("Result", conversion or {})]:
+    policy_values = dict((key, options[key]) for key in ["run_mode", "quality_mode", "encoder_backend", "resize_mode", "cbr_mode", "size_policy", "create_backup"] if key in options)
+    for name, values in [("Scan", result), ("Result", conversion or {}), ("Options", policy_values)]:
         parent = document.CreateElement(name)
         root.AppendChild(parent)
         for key, value in values.items():
@@ -2769,7 +2992,7 @@ def _resume_book_checkpoint(source, options):
     document.XmlResolver = None
     document.Load(target)
     root = document.DocumentElement
-    if root.Name != "Checkpoint" or root.GetAttribute("version") != "1":
+    if root.Name != "Checkpoint" or root.GetAttribute("version") != "2" or root.GetAttribute("compatibility") != CHECKPOINT_POLICY_VERSION:
         raise Exception("Unsupported checkpoint: " + target)
     output = _safe_unicode(root.GetAttribute("output"))
     if root.GetAttribute("state") not in ["pending", "completed", "skipped", "retryable"]:
@@ -2800,7 +3023,7 @@ def _resume_book_checkpoint(source, options):
         message = "Previously rejected by the same size policy; unchanged source was not encoded again."
         output = ""
     stored = dict((_safe_unicode(n.GetAttribute("key")), _safe_unicode(n.GetAttribute("value"))) for n in root.SelectNodes("Result/Value"))
-    return scan, {"STATUS": "SKIPPED", "SKIP_REASON": "RESUMED", "OUTPUT_PATH": output, "MESSAGE": message,
+    return scan, {"STATUS": "SKIPPED", "SKIP_REASON": "RESUMED", "RESUMED_SKIP_REASON": stored.get("SKIP_REASON", "SIZE_POLICY" if root.GetAttribute("state") == "skipped" else ""), "OUTPUT_PATH": output, "MESSAGE": message,
                   "OUTPUT_IMAGE_FORMAT": stored.get("OUTPUT_IMAGE_FORMAT", "WEBP") if output else scan.get("image_format", "")}
 
 
@@ -2823,7 +3046,9 @@ def _run_phase_one(books, options=None):
     progress_form.Show()
     results = []
 
+    awake = None
     try:
+        awake = _begin_keep_awake(options or {})
         total = len(books)
         for index in range(total):
             if progress_form.stop_requested:
@@ -2848,7 +3073,10 @@ def _run_phase_one(books, options=None):
         report_text = _copy_reports_to_sources(report_text, report_path, results, options or {})
         _record_run_safely(report_path, report_text, options or {}, results)
     finally:
-        progress_form.finish()
+        try:
+            progress_form.finish()
+        finally:
+            _end_keep_awake(awake)
 
     report_form = ReportForm(report_text, report_path)
     report_form.ShowDialog()
@@ -2859,13 +3087,23 @@ def _run_phase_two(books):
 
     Options open before dependency checks so history needs neither selected
     books nor a working conversion toolchain. Stop checks bracket each book."""
-    options_form = OptionsForm()
-    if options_form.ShowDialog() != DialogResult.OK:
+    options = _choose_options_with_history(books)
+    if options is None:
         return
-    options = options_form.options
     if not books or len(books) == 0:
         MessageBox.Show("Select books before starting a run. Run history is available without selecting books.", "WebP Optimizer", MessageBoxButtons.OK, MessageBoxIcon.Information)
         return
+
+    if options.get("_show_preflight"):
+        if not _confirm_batch(books, options):
+            return
+        setup_options = dict(options)
+        if books and not options.get("work_dir"):
+            setup_options["_setup_default_work_dir"] = Path.GetDirectoryName(_safe_unicode(getattr(books[0], "FilePath", "")))
+        setup = _setup_checks(setup_options)
+        if setup.get("STATUS") != "OK":
+            MessageBox.Show("Setup needs attention before this batch can start.\n" + setup.get("CHECK_MESSAGE", "Open Tools & recovery > Check setup for details."), "WebP Optimizer")
+            return
 
     tool_path = _find_archive_tool()
     if not tool_path:
@@ -2896,6 +3134,7 @@ def _run_phase_two(books):
     _ensure_directory(REPORT_DIR)
     progress_form = ProgressForm()
     progress_form.Show()
+    options["_progress_form"] = progress_form
     results = []
     conversion_results = []
     total = len(books)
@@ -2906,7 +3145,9 @@ def _run_phase_two(books):
         options["trial_preview_root"] = Path.Combine(REPORT_DIR, "QualityTests", System.Guid.NewGuid().ToString("N"))
         _ensure_directory(options["trial_preview_root"])
 
+    awake = None
     try:
+        awake = _begin_keep_awake(options)
         if benchmark_mode:
             for index in range(total):
                 book = books[index]
@@ -2943,10 +3184,12 @@ def _run_phase_two(books):
                             if options.get("run_mode") == "Replace Originals" and reused.get("OUTPUT_PATH"):
                                 _update_book_file_path(book, reused["OUTPUT_PATH"])
                                 _set_converted_custom_values(book, reused["OUTPUT_PATH"], reused)
+                            _status_after_conversion(book, results[index], reused, options)
                             conversion_results.append(reused)
                             continue
                     except Exception, ex:
                         results[index] = {"caption": _safe_unicode(getattr(book, "Caption", "")), "file_path": source, "status": "Checkpoint needs inspection"}
+                        _set_workflow_status(book, "Needs attention", _safe_unicode(ex), source)
                         conversion_results.append({"STATUS": "ERROR", "MESSAGE": _safe_unicode(ex)})
                         continue
                     scan_clock = Stopwatch.StartNew()
@@ -2964,6 +3207,8 @@ def _run_phase_two(books):
                 continue
 
             if not result.get("eligible", False):
+                if not benchmark_mode:
+                    _status_after_conversion(book, result, {"STATUS": "SKIPPED", "MESSAGE": result.get("notes", "")}, options)
                 conversion_results.append({
                     "STATUS": "SKIPPED",
                     "SKIP_REASON": _safe_unicode(result.get("skip_reason", "NOT_ELIGIBLE")),
@@ -2972,6 +3217,7 @@ def _run_phase_two(books):
                 continue
 
             if _safe_unicode(result.get("archive_type", "")) == "cbr" and _safe_unicode(options.get("cbr_mode", "")) == "Keep original CBR files (skip conversion)":
+                _set_workflow_status(book, "Skipped", "CBR left unchanged by the selected option", result.get("file_path", ""))
                 conversion_results.append({
                     "STATUS": "SKIPPED",
                     "SKIP_REASON": "CBR_OPTION",
@@ -2992,11 +3238,25 @@ def _run_phase_two(books):
                 continue
 
             attempt_options = dict(options)
+            if options.get("prefetch") and options.get("work_dir") and index + 1 < total and not progress_form.stop_requested:
+                attempt_options["prefetch_next"] = _safe_unicode(getattr(books[index + 1], "FilePath", ""))
             planned_output = _build_replace_temp_output_path_for_result(result, options) if options.get("run_mode") == "Replace Originals" else _build_copy_output_path_for_result(result, options)
             attempt_options["checkpoint_output_path"] = planned_output
             _write_book_checkpoint(result, options, planned_output, "pending")
             worker_clock = Stopwatch.StartNew()
             helper_result = _run_conversion_helper(python_tool, tool_path, result, attempt_options, book)
+            # The consumed cache normally disappears inside the helper. Also clean
+            # after early rejection (for example an output-path collision).
+            old_cache = options.get("prefetch_record", "")
+            options["prefetch_record"] = helper_result.get("PREFETCH_RECORD", "")
+            # An exact worker acknowledgement avoids a second Python startup.
+            # Older/failed workers without this acknowledgement still use the
+            # guarded cleanup helper; never assume missing stdout means cleanup.
+            if old_cache and helper_result.get("PREFETCH_CLEANED_RECORD", "") != old_cache:
+                try:
+                    _cleanup_prefetch(python_tool, {"prefetch_record": old_cache, "work_dir": options.get("work_dir", "")})
+                except Exception, ex:
+                    helper_result["CLEANUP_WARNING"] = _safe_unicode(ex) + " Cache: " + old_cache
             helper_result["TIME_WORKER_SECONDS"] = "{0:.3f}".format(worker_clock.Elapsed.TotalSeconds)
             helper_result["TIME_SCAN_SECONDS"] = result.get("scan_seconds", "0")
             if helper_result.get("CLEANUP_WARNING"):
@@ -3006,6 +3266,8 @@ def _run_phase_two(books):
                 helper_result["MESSAGE"] = _safe_unicode(helper_result.get("stderr", "")) or "Conversion helper failed."
 
             if _safe_unicode(helper_result.get("STATUS", "")) == "OK" and _safe_unicode(options.get("run_mode", "")) == "Replace Originals":
+                if hasattr(progress_form, "update_archive_progress"):
+                    progress_form.update_archive_progress("REPLACING|0|0")
                 replace_clock = Stopwatch.StartNew()
                 helper_result = _finalize_replacement(_safe_unicode(result.get("file_path", "")), helper_result, options)
                 helper_result["TIME_REPLACE_SECONDS"] = "{0:.3f}".format(replace_clock.Elapsed.TotalSeconds)
@@ -3028,6 +3290,7 @@ def _run_phase_two(books):
                 except Exception, ex:
                     helper_result["CHECKPOINT_WARNING"] = _safe_unicode(ex)
                     progress_form.stop_requested = True
+            _status_after_conversion(book, result, helper_result, options)
             conversion_results.append(helper_result)
             if hasattr(progress_form, "record_work"):
                 progress_form.record_work(helper_result)
@@ -3041,10 +3304,24 @@ def _run_phase_two(books):
         report_text = _copy_reports_to_sources(report_text, report_path, results, options or {})
         _record_run_safely(report_path, report_text, options or {}, results)
     finally:
-        progress_form.finish()
+        try:
+            try:
+                if options.get("prefetch_record"):
+                    _cleanup_prefetch(python_tool, options)
+            except Exception, ex:
+                MessageBox.Show("Temporary prefetch cleanup needs attention: " + _safe_unicode(ex) + "\nCache: " + options.get("prefetch_record", ""), "WebP Optimizer")
+            finally:
+                progress_form.finish()
+        finally:
+            _end_keep_awake(awake)
 
     report_form = ReportForm(report_text, report_path)
     report_form.ShowDialog()
+
+
+# [P21] Native support definitions share this adapter namespace deliberately.
+_SUPPORT_SCRIPT = Path.Combine(SCRIPT_DIR, "webp_runtime_support.py")
+exec compile(File.ReadAllText(_SUPPORT_SCRIPT), _SUPPORT_SCRIPT, "exec")
 
 
 # ===========================================================================
@@ -3077,17 +3354,16 @@ def webp_optimizer_phase_one(books):
 #@Description Reopen previous WebP Optimizer results and retained previews without selecting comics.
 def webp_optimizer_history(books):
     """ComicRack Library hook: open read-only/history actions without a selection."""
+    global _RUN_ACTIVE
     if _RUN_ACTIVE:
         MessageBox.Show("Finish or stop the active run before opening history from the library menu.", "WebP Optimizer")
         return
-    form = None
+    _RUN_ACTIVE = True
     try:
-        _history_trace("Opening standalone history")
-        form = RunHistoryForm(allow_retest=False)
-        form.ShowDialog()
+        _history_trace("Opening standalone independent history")
+        _open_history_external(allow_retest=False)
     except Exception, ex:
-        _history_trace("Standalone history failed: " + _safe_unicode(ex))
-        MessageBox.Show("Could not open run history: " + _safe_unicode(ex), "WebP Optimizer")
+        _history_trace("Independent history failed: " + _safe_unicode(ex))
+        MessageBox.Show(_safe_unicode(ex), "WebP Optimizer")
     finally:
-        if form is not None:
-            form.Dispose()
+        _RUN_ACTIVE = False

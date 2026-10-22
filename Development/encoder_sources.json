@@ -1,0 +1,60 @@
+{
+  "platform": "Windows x64",
+  "quantum_depth": 8,
+  "inputs": [
+    {
+      "name": "w64devkit-x64-2.10.1.7z.exe",
+      "url": "https://github.com/skeeto/w64devkit/releases/download/v2.10.1/w64devkit-x64-2.10.1.7z.exe",
+      "sha256": "add1edf984ce4d473cfeb7c52e0ab38db73a855bba6c7f564d5e16648eb2896a",
+      "kind": "build-tool"
+    },
+    {
+      "name": "ImageMagick-7.1.2-34.tar.xz",
+      "url": "https://download.imagemagick.org/releases/ImageMagick-7.1.2-34.tar.xz",
+      "sha256": "d9d826fec211d56efbb4343f19697d0cfb83b387c1d9ab11cf9c5770056c246c",
+      "kind": "source"
+    },
+    {
+      "name": "libwebp-1.6.0.tar.gz",
+      "url": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz",
+      "sha256": "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564",
+      "kind": "source"
+    },
+    {
+      "name": "libjpeg-turbo-3.2.0.tar.gz",
+      "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.0/libjpeg-turbo-3.2.0.tar.gz",
+      "sha256": "6f30092cef9fb839779646608f4ee14ae3cbac989c47fa05e841b0841f09878e",
+      "kind": "source"
+    },
+    {
+      "name": "lcms2-2.19.1.tar.gz",
+      "url": "https://github.com/mm2/Little-CMS/releases/download/lcms2.19.1/lcms2-2.19.1.tar.gz",
+      "sha256": "bfc54f7bab59fbc921012014a8032e4cba4abd46db47d46b76416a8c0b2815c8",
+      "kind": "source"
+    },
+    {
+      "name": "nasm-3.01-win64.zip",
+      "url": "https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-win64.zip",
+      "sha256": "e0ba5157007abc7b1a65118a96657a961ddf55f7e3f632ee035366dfce039ca4",
+      "kind": "build-tool"
+    },
+    {
+      "name": "GCC-COPYING.RUNTIME",
+      "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-16.2.0/COPYING.RUNTIME",
+      "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+      "kind": "license"
+    },
+    {
+      "name": "GCC-COPYING3",
+      "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-16.2.0/COPYING3",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "kind": "license"
+    },
+    {
+      "name": "LGPL-2.1.txt",
+      "url": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "kind": "license"
+    }
+  ]
+}

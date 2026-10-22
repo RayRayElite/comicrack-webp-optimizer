@@ -1,0 +1,10 @@
+<!-- Copyright (c) 2026 RayRayElite. SPDX-License-Identifier: MIT.
+     Original vector artwork; no external image or font dependencies. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect x="18" y="8" width="94" height="112" rx="14" fill="#203b34"/>
+  <rect x="10" y="8" width="92" height="104" rx="12" fill="#479849"/>
+  <path d="M24 8h9v104h-9z" fill="#267039"/>
+  <path d="M30 112h72v8H30c-9 0-16-6-16-13v-3c3 5 8 8 16 8z" fill="#dce8dc"/>
+  <path d="M40 37h10l5 32 7-24h9l7 24 5-32h10L83 86H73l-7-24-7 24H49z" fill="#fff"/>
+  <path d="M43 22h39v4H43zM43 94h39v4H43z" fill="#c4e2ba"/>
+</svg>

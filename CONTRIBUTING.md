@@ -4,6 +4,10 @@ Read [README.md](README.md) for user behavior and [ARCHITECTURE.md](ARCHITECTURE
 
 The project is maintained by RayRayElite at `RayRayElite/comicrack-webp-optimizer`. Plugin code is MIT licensed; contributions intended for inclusion should use the same license. Keep upstream third-party notices separate. Pull requests, testing and documentation improvements are welcome; contributing back is encouraged rather than required by the license.
 
+## Release policy
+
+Version 1.0.0 is the first stable release. The final feature addition was preview diagnostics in preparation build 0.9.13. Keep maintenance changes focused; propose larger features for a later release. Preserve the defaults and source-replacement safeguards, and rerun relevant checks after a fix.
+
 ## Working safely
 
 Use a separate ComicRack test installation or disposable copies of comics. Start with analysis and copy mode before testing replacement. Do not run development tools against a production collection. Reports and history contain personal paths; use synthetic examples in issues and pull requests.
@@ -27,16 +31,21 @@ Run commands from the ComicRack appdata workspace as shown in [Development/READM
 | Area | Check |
 |---|---|
 | Synthetic full quality test, archive/preview fidelity | Development/test_trial_helper.py |
+| Bundled encoder: DLL imports, Q levels, profiles, pixel/byte comparison and staged helper | Development/test_bundled_encoder.py |
 | Page workers, stage timings, compression and failure/CRC regressions | Development/test_performance.py |
+| Process resource measurements, bounded cache and helper handoff | Development/test_performance_support.py |
+| Native worker benchmark, settings, stopping and copy/prefetch pipeline | Development/test_performance_ui.py through render_ui.ps1 |
 | Native streaming, interrupted-session resume and pending-output guards | Development/test_batch.py via render_ui.ps1 |
 | Encoder availability and generated image conversion | Development/test_encoders.py |
 | Output/page collisions and archive validation | Development/test_safety.py |
 | Profile regression using local Adobe RGB sample | Development/test_color_fidelity.py |
+| Preview RGB metrics/heatmap, coordinate mapping and async lifecycle | Development/test_preview_difference.py through render_ui.ps1 |
 | Native forms, settings, stopping, cleanup and history | Development/render_ui.ps1, test_runtime_features.py, test_history.py |
 | Historical HTML calibration controls | Development/test_quality_lab.cjs |
 | Real copied samples and replacement failure cases | Development/run_sample_tests.py |
 | Release allowlist, CRC and hashes | Development/build_release.py |
 | Extracted release conversion | Development/test_packaged_release.py |
+| Source export and all-artifact audit | Development/test_source_package.py, Development/audit_release.py |
 
 Some harnesses are tied to the original development installation: native rendering locates portable ComicRack DLLs and historical report fixtures, while color/sample checks require local comic fixtures. Those fixtures are intentionally excluded from Git. Read each harness's paths before running it; a fresh checkout does not contain every input. Generate the trial fixtures with `test_trial_helper.py` before native checks. A passing render does not replace a live ComicRack integration check.
 
@@ -48,4 +57,6 @@ The release builder uses an explicit file allowlist; it never bundles the develo
 
 The local `.gitignore` excludes personal settings, reports, generated releases, comic fixtures, test outputs and session notes. It does not remove existing files or untrack files already committed. Check staged contents before publishing, particularly binary archives and personal paths. Development scripts remain available to contributors even though they are excluded from the install ZIP.
 
-Encoder executables and Microsoft DLLs are excluded from Git and the source ZIP. `Development/build_source.py` makes an explicit source allowlist export without those binaries or local data. A source checkout must obtain its encoder separately before building the runtime ZIP. Follow THIRD_PARTY_NOTICES before public binary distribution. Current 0.9.0 builds are pre-release testing; 1.0.0 is reserved for the first public stable release.
+Encoder executables and Microsoft DLLs are excluded from Git and the source ZIP. `Development/build_source.py` makes an explicit source allowlist export without those binaries or local data. A source checkout must build the reviewed encoder using [ENCODER_BUILD.md](Development/ENCODER_BUILD.md), or supply a matching reviewed bundle, before building the normal runtime ZIP. The optional plugin-only build excludes the encoder. Follow THIRD_PARTY_NOTICES before public binary distribution. The 0.x changelog entries describe development milestones; 1.0.0 is the first public stable release.
+
+The native regression harness also runs `Development/test_release_features.py`, covering workflow values, preflight cancellation, setup diagnostics, progress delivery, power-state restoration and recovery guards. `webp_runtime_support.py` requires IronPython 2; do not validate it with CPython 3's compiler. Preserve the section IDs and document changes to checkpoint compatibility.

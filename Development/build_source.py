@@ -12,14 +12,16 @@ import sys
 import zipfile
 
 sys.dont_write_bytecode = True
-from build_release import RUNTIME_FILES
+from build_release import RUNTIME_FILES, MAGICK_LICENSE_FILES
 
 BASE = Path(__file__).resolve().parent.parent
-SOURCE_FILES = RUNTIME_FILES + [
-    '.gitignore', '.github/ISSUE_TEMPLATE/bug_report.md',
-    '.github/PULL_REQUEST_TEMPLATE.md', 'Magick/magick_License.txt',
+SOURCE_FILES = RUNTIME_FILES + MAGICK_LICENSE_FILES + [
+    '.gitignore', '.gitattributes', '.github/ISSUE_TEMPLATE/bug_report.md',
+    '.github/PULL_REQUEST_TEMPLATE.md',
     'Development/README.md', 'Development/build_release.py',
-    'Development/build_source.py', 'Development/quality_lab.html',
+    'Development/build_source.py', 'Development/audit_release.py',
+    'Development/build_encoder.py', 'Development/package_encoder.py', 'Development/inspect_pe.py',
+    'Development/test_bundled_encoder.py', 'Development/encoder_sources.json', 'Development/ENCODER_BUILD.md', 'Development/quality_lab.html',
     'Development/quality_lab.py', 'Development/render_ui.ps1',
     'Development/run_sample_tests.py', 'Development/test_batch.py',
     'Development/test_color_fidelity.py', 'Development/test_encoders.py',
@@ -27,7 +29,10 @@ SOURCE_FILES = RUNTIME_FILES + [
     'Development/test_packaged_release.py', 'Development/test_performance.py',
     'Development/test_quality_lab.cjs', 'Development/test_runtime_features.py',
     'Development/test_safety.py', 'Development/test_trial_helper.py',
-    'Development/test_source_package.py',
+    'Development/test_source_package.py', 'Development/test_preview_difference.py',
+    'Development/test_release_features.py',
+    'Development/test_long_paths.py',
+    'Development/test_performance_support.py', 'Development/test_performance_ui.py',
 ]
 
 

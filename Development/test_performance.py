@@ -26,7 +26,7 @@ root.mkdir(parents=True)
 profile = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
 source = root / 'generated.cbz'
 with zipfile.ZipFile(source, 'x') as archive:
-    for index in range(8):
+    for index in range(24):
         image = Image.linear_gradient('L').resize((1200, 1800)).convert('RGB')
         draw = ImageDraw.Draw(image)
         for panel in range(6):
@@ -44,15 +44,18 @@ with zipfile.ZipFile(source, 'x') as archive:
 original_hash = hashlib.sha256(source.read_bytes()).hexdigest()
 measurements = []
 reference = None
-for workers in (1, 2, 4):
+for workers in (1, 2, 4, 6, 8, 10, 12):
     output = root / ('workers%d.cbz' % workers)
     command = [sys.executable, str(BASE / 'webp_convert_helper.py'),
                '--archive-path', str(source), '--archive-tool', str(BASE.parent.parent / 'ComicRackCE_nightly/Resources/7z.exe'),
                '--output-path', str(output), '--archive-type', 'cbz', '--quality-mode', 'Q80',
-               '--size-policy', 'Keep All Results', '--work-dir', str(root), '--page-workers', str(workers)]
+               '--size-policy', 'Keep All Results', '--work-dir', str(root), '--page-workers', str(workers), '--metrics']
     result = subprocess.run(command, capture_output=True, text=True, timeout=240)
     assert result.returncode == 0, (result.stdout, result.stderr)
     values = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    assert 0 <= float(values['RESOURCE_CPU_AVG_PERCENT']) <= 100
+    assert float(values['RESOURCE_RAM_PEAK_MB']) > 0
+    assert float(values['RESOURCE_READ_MBPS']) > 0
     assert values['STATUS'] == 'OK' and values['PAGE_WORKERS'] == str(workers)
     assert all(float(values['TIME_' + key + '_SECONDS']) >= 0 for key in ['EXTRACT', 'ENCODE', 'REBUILD', 'VALIDATE', 'CLEANUP', 'TOTAL'])
     with zipfile.ZipFile(output) as archive:
@@ -109,11 +112,22 @@ offset = data.index(b'Original payload')
 data[offset] ^= 1
 bad.write_bytes(data)
 try:
-    h.validate_output(bad, '', verify_root)
+    h.validate_output(bad, '', verify_root, 12)
 except zipfile.BadZipFile:
     pass
 else:
     raise AssertionError('Corrupt CRC accepted')
+
+# A valid ZIP CRC cannot conceal changed content from concurrent hash checks.
+wrong = root / 'wrong-content.cbz'
+with zipfile.ZipFile(wrong, 'x') as archive:
+    archive.writestr('notes.txt', 'Changed payload')
+try:
+    h.validate_output(wrong, '', verify_root, 12)
+except RuntimeError as error:
+    assert 'content mismatch' in str(error)
+else:
+    raise AssertionError('Changed content accepted')
 
 # All submitted encoders must finish before work cleanup on a page failure.
 failure_root = root / 'failure'
