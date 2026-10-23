@@ -2,7 +2,7 @@
 
 Make room in your comic collection from inside **ComicRack Community Edition**. Analyze CBZ/CBR archives, compare quality, and convert eligible JPEG pages to WebP. Replace originals without keeping permanent duplicates, or create separate copies.
 
-**Current release: 1.0.1**
+**Current release: 1.0.2**
 
 [Downloads](https://github.com/RayRayElite/comicrack-webp-optimizer/releases) | [User guide](ADVANCED_USAGE.md) | [Report a bug](https://github.com/RayRayElite/comicrack-webp-optimizer/issues) | [Contribute](CONTRIBUTING.md)
 

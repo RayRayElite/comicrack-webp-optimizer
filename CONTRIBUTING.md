@@ -35,8 +35,10 @@ Run commands from the ComicRack appdata workspace as shown in [Development/READM
 | Page workers, stage timings, compression and failure/CRC regressions | Development/test_performance.py |
 | Process resource measurements, bounded cache and helper handoff | Development/test_performance_support.py |
 | Native worker benchmark, settings, stopping and copy/prefetch pipeline | Development/test_performance_ui.py through render_ui.ps1 |
+| Atomic XML/checkpoint paths, locks and failure preservation | Development/test_checkpoint_io.py through render_ui.ps1 -CheckpointIoSmoke |
 | Native streaming, interrupted-session resume and pending-output guards | Development/test_batch.py via render_ui.ps1 |
 | Encoder availability and generated image conversion | Development/test_encoders.py |
+| Read-only extraction, AppleDouble attachments and strict integrity | Development/test_archive_edge_cases.py; test_macos_scan.py through render_ui.ps1 |
 | Output/page collisions and archive validation | Development/test_safety.py |
 | Profile regression using local Adobe RGB sample | Development/test_color_fidelity.py |
 | Preview RGB metrics/heatmap, coordinate mapping and async lifecycle | Development/test_preview_difference.py through render_ui.ps1 |

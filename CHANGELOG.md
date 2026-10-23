@@ -1,5 +1,15 @@
 # Release notes
 
+## 1.0.2 - 2026-10-23
+
+Read-only archive members, macOS metadata and atomic XML checkpoint handling fixes.
+
+- Clear archived Windows read-only flags only on generated extraction storage, before page conversion and metadata injection. Retry read-only cleanup errors within that work tree; source archive permissions and ACLs are not modified.
+- Treat image-looking `__MACOSX/._*` members as preserved attachments during analysis, page discovery, conversion, validation and recovery inspection. Retain exact manifest, attachment hash and CRC checks; ordinary/root-dot image names remain subject to image validation.
+- Add generated read-only JPEG/XML/attachment regressions at 1/12 workers, preview checks, metadata-tampering/CRC failures and native scan coverage. Existing compatible completed-book checkpoints remain reusable.
+- Write checkpoints, worker identity, settings and history through one atomic XML helper: short exclusive same-folder temporary names and file streams avoid unnecessary path growth and XML filename interpretation. Preserve original records on failed replacement and retain fail-safe checkpoint blocking.
+- Add operation/target/temp path lengths to write failures. Generated native tests cover long-path geometry, special characters, missing/blocked parents, locked records and temporary cleanup; legacy .NET reproduction confirms the old temporary-name pattern can exceed MAX_PATH.
+
 ## 1.0.1 - 2026-10-22
 
 Fix 7-Zip being reported missing despite a standalone installation.

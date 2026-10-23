@@ -35,12 +35,14 @@ Some harnesses are installation-specific. The native launcher locates DLLs in th
 | Area | Check |
 |---|---|
 | ComicRack/standalone/custom/PATH 7-Zip discovery | `test_archive_discovery.py` via `render_ui.ps1 -ArchiveDiscoverySmoke` |
+| Read-only extraction/cleanup and preserved AppleDouble integrity | `test_archive_edge_cases.py`; `test_macos_scan.py` via native harness |
 | Archive/source safety, collisions and injected failures | `test_safety.py`, `test_encoders.py`, `test_long_paths.py` |
 | Five-quality trials and retained preview fidelity | `test_trial_helper.py` |
 | All seven worker counts, encoded member/profile identity and CRC failures | `test_performance.py` |
 | CPU/memory/logical I/O accounting, bounded prefetch and cleanup | `test_performance_support.py` |
 | Bundled encoder DLLs, color/profiles and optional old/new byte comparison | `test_bundled_encoder.py` |
 | Native settings, safe stop, history, cleanup and color-managed viewer | `test_runtime_features.py`, `test_history.py` via `render_ui.ps1` |
+| Atomic XML I/O, path lengths, special characters and locks | `test_checkpoint_io.py` via `render_ui.ps1 -CheckpointIoSmoke` |
 | Checkpoints, streaming conversion and three-book quality ETA | `test_batch.py` via `render_ui.ps1` |
 | Setup, preflight, workflow tags, recovery, sleep and dark controls | `test_release_features.py` via `render_ui.ps1` |
 | Native benchmarks, applying worker settings and copy/prefetch pipeline | `test_performance_ui.py` via `render_ui.ps1` |
@@ -70,6 +72,6 @@ The normal manual-install ZIP includes the minimal static ImageMagick Windows x6
 
 ## Release status
 
-Current stable release: **1.0.1**, adding standalone 7-Zip discovery to the original 1.0.0 release. The final feature addition was preview diagnostics. Keep maintenance fixes separate from new feature work. Defaults remain Q80, no resize, one worker, Normal priority and prefetch off. Preserve checkpoint policy compatibility unless conversion semantics change.
+Current stable release: **1.0.2**, fixing read-only extraction, preserved AppleDouble metadata and atomic XML writes, after the 1.0.1 standalone 7-Zip discovery fix. The final feature addition was preview diagnostics. Keep maintenance fixes separate from new feature work. Defaults remain Q80, no resize, one worker, Normal priority and prefetch off. Preserve checkpoint policy compatibility unless conversion semantics change.
 
 The reviewed minimal encoder replaced the earlier broad Visual Studio binary and loose runtime DLLs. Historical licensing gates refer to that retired build. The current package retains matching component notices and pinned provenance; see [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). Keep final installation acceptance distinct from automated tests.

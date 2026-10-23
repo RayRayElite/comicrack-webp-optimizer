@@ -29,6 +29,7 @@ SOURCE_FILES = RUNTIME_FILES + MAGICK_LICENSE_FILES + [
     'Development/test_packaged_release.py', 'Development/test_performance.py',
     'Development/test_quality_lab.cjs', 'Development/test_runtime_features.py',
     'Development/test_safety.py', 'Development/test_trial_helper.py',
+    'Development/test_checkpoint_io.py', 'Development/test_archive_edge_cases.py', 'Development/test_macos_scan.py',
     'Development/test_archive_discovery.py', 'Development/test_source_package.py', 'Development/test_preview_difference.py',
     'Development/test_release_features.py',
     'Development/test_long_paths.py',

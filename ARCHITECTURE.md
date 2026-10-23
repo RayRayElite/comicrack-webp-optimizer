@@ -164,3 +164,15 @@ H08 reads ZIP members serially for CRC validation, then queues hash/decode check
 The normal runtime ZIP includes the reviewed static Windows x64 ImageMagick encoder. Python/Pillow and optional external tools remain prerequisites. Development/encoder_sources.json pins upstream build inputs; build_encoder.py compiles in an isolated workspace; package_encoder.py stages exact notices and provenance; inspect_pe.py checks imported DLLs. Magick/build-info.json identifies the adopted binary and legal-file hashes. See [the encoder recipe](Development/ENCODER_BUILD.md).
 
 Development/build_release.py owns the runtime allowlist, including NativeWindows.cs and all encoder notices. build_source.py exports the contributor tree without vendor executables/private data. audit_release.py checks artifacts against current source and manifests. New files must be added to the correct allowlists. Compiler workspaces, old binaries and private release-prep notes never enter those exports.
+
+
+## Extracted attributes and AppleDouble attachments
+
+H04 normalizes only Windows read-only bits inside owned extraction storage, refusing redirected/outside paths. Main cleanup retries a read-only removal within the same boundary; unrelated permissions remain failures. No source archive attributes/ACLs change.
+
+The adapter `_is_macos_sidecar` and worker `is_macos_sidecar` share a narrow path rule: `__MACOSX` directory component plus `._` basename prefix. These members retain their names/content as attachments and participate in manifest/hash/CRC checks, while image decoding/page counts skip them. Keep scan, worker discovery, output validation and read-only recovery checks aligned. Generated regressions live in test_archive_edge_cases.py and test_macos_scan.py.
+
+
+## Atomic XML record writes
+
+P02 `_save_xml_atomic` owns checkpoint, worker-identity, history and settings writes. It creates parent folders, opens a short unique same-folder temporary file exclusively, saves through FileStream and flushes before Move/Replace. The final record's path/schema is unchanged. Existing records remain in place on failure; cleanup cannot mask the original error. Diagnostics name the operation and both path lengths. Do not restore target-name-plus-GUID temporary paths or fall back to deleting a durable record before replacement. Native `test_checkpoint_io.py` covers path geometry, characters and actual file locks.

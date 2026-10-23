@@ -15,6 +15,7 @@ import time
 import threading
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -208,10 +209,68 @@ def evaluate_size_policy(source_size, output_size, policy):
 # ===========================================================================
 # [H04] Archive extraction and page discovery
 # ===========================================================================
+def is_macos_sidecar(member_name):
+    """Known AppleDouble naming inside __MACOSX, not a blanket dotfile skip.
+
+    Preserve these members byte-for-byte as attachments. Other image names,
+    including root-level ._ names, keep normal conversion/decode validation.
+    """
+    parts = str(member_name).replace("\\", "/").split("/")
+    return "__MACOSX" in parts[:-1] and parts[-1].startswith("._")
+
+
+def _clear_temporary_readonly(path, root):
+    """Clear only a Windows read-only bit inside caller-owned extracted storage.
+
+    Never change archive/source permissions or ACLs. Refuse redirected paths;
+    permission failures unrelated to the read-only bit must still surface.
+    """
+    root = os.path.realpath(root)
+    path = os.path.abspath(path)
+    resolved = os.path.realpath(path)
+    if os.path.commonpath([os.path.normcase(root), os.path.normcase(resolved)]) != os.path.normcase(root):
+        raise RuntimeError("Temporary attribute change outside extraction root refused: " + path)
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        raise RuntimeError("Redirected temporary member refused: " + path)
+    if getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_READONLY:
+        os.chmod(path, info.st_mode | stat.S_IWRITE)
+        return True
+    return False
+
+
+def prepare_extracted_storage(root):
+    """Extraction can restore archived read-only flags, including on XML/files.
+
+    Normalize only generated work files before conversion/metadata injection.
+    Walk without following links and inspect directories before descending.
+    """
+    _clear_temporary_readonly(root, root)
+    for current, directories, files in os.walk(root, followlinks=False):
+        for name in directories + files:
+            _clear_temporary_readonly(os.path.join(current, name), root)
+
+
+def cleanup_temporary_storage(root):
+    """Remove only the supplied work tree; retry read-only errors, not ACL errors.
+
+    Python 3.9-compatible onerror form. The caller keeps reporting any remaining
+    work directory so cleanup failures still stop the normal batch safely.
+    """
+    def readonly_error(function, path, exc_info):
+        if isinstance(exc_info[1], PermissionError) and _clear_temporary_readonly(path, root):
+            function(path)
+        else:
+            raise exc_info[1]
+    shutil.rmtree(root, onerror=readonly_error)
+
+
 def run_extract(archive_tool, archive_path, target_dir):
     """Extract into caller-owned work storage and return the 7-Zip exit/output tuple."""
     command = [archive_tool, "x", "-y", archive_path, f"-o{target_dir}"]
     result = perf.run_tool(command, capture_output=True, text=True)
+    if result.returncode == 0:
+        prepare_extracted_storage(target_dir)
     return result.returncode, result.stdout, result.stderr
 
 
@@ -222,7 +281,7 @@ def walk_page_files(root_dir):
         for file_name in files:
             full_path = os.path.join(current_root, file_name)
             extension = Path(file_name).suffix.lower()
-            if extension in IMAGE_EXTENSIONS:
+            if extension in IMAGE_EXTENSIONS and not is_macos_sidecar(Path(full_path).relative_to(root_dir).as_posix()):
                 page_files.append(full_path)
     page_files.sort()
     return page_files
@@ -331,10 +390,10 @@ def convert_pages(page_files, mode, encoder_backend, resize_mode, page_workers=1
     so the caller can safely remove work storage after an exception.
     """
     if page_workers not in perf.WORKERS:
-        raise ValueError("Page workers must be 1, 2 or 4")
+        raise ValueError("Page workers must be one of: " + ", ".join(map(str, perf.WORKERS)))
     options = quality_options(mode)
     backend_name, backend_tool = resolve_encoder_backend(encoder_backend)
-    sources = [p for p in page_files if Path(p).suffix.lower() in {".jpg", ".jpeg"}]
+    sources = [p for p in page_files if Path(p).suffix.lower() in {".jpg", ".jpeg"} and not is_macos_sidecar(p)]
     targets = set()
     for source in sources:
         target = str(Path(source).with_suffix(".webp"))
@@ -543,7 +602,7 @@ def validate_output(output_path, archive_tool, root_dir, workers=1):
             def verify(name, path, data):
                 if hashlib.sha256(data).digest() != bytes.fromhex(perf.file_hash(path)):
                     raise RuntimeError("Output member content mismatch: " + name)
-                if path.suffix.lower() in IMAGE_EXTENSIONS:
+                if path.suffix.lower() in IMAGE_EXTENSIONS and not is_macos_sidecar(name):
                     with Image.open(io.BytesIO(data)) as image:
                         image.load()
             pending, buffered = deque(), 0
@@ -574,7 +633,7 @@ def validate_output(output_path, archive_tool, root_dir, workers=1):
             for name, path in actual.items():
                 if path.read_bytes() != expected[name].read_bytes():
                     raise RuntimeError("Output member content mismatch: " + name)
-                if path.suffix.lower() in IMAGE_EXTENSIONS:
+                if path.suffix.lower() in IMAGE_EXTENSIONS and not is_macos_sidecar(name):
                     with Image.open(path) as image:
                         image.load()
 
@@ -616,7 +675,7 @@ def inspect_archive(archive_path, archive_tool, work_dir):
                 raise RuntimeError("Duplicate archive member names")
             for item in members:
                 data = archive.read(item)  # Verifies CRC, including non-image members.
-                if Path(item.filename).suffix.lower() in IMAGE_EXTENSIONS:
+                if Path(item.filename).suffix.lower() in IMAGE_EXTENSIONS and not is_macos_sidecar(item.filename):
                     with Image.open(io.BytesIO(data)) as image:
                         image.load()
                     count += 1
@@ -885,7 +944,12 @@ def main():
         timings[stage] = time.perf_counter() - stage_started
         emit_progress("CLEANUP")
         cleanup_started = time.perf_counter()
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        try:
+            cleanup_temporary_storage(temp_dir)
+        except OSError:
+            pass
+        except RuntimeError:
+            pass
         if os.path.exists(temp_dir):
             print_result({"CLEANUP_WARNING": "Temporary work folder could not be fully removed: " + temp_dir})
         if args.prefetch_record:

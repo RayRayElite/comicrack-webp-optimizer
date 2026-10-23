@@ -73,6 +73,43 @@ def _ensure_directory(path):
         Directory.CreateDirectory(path)
 
 
+def _save_xml_atomic(document, target, description="XML record"):
+    """Commit a same-folder journal without extending its already hashed filename.
+
+    Use an exclusive short temporary name and a FileStream, so XML APIs never
+    reinterpret the filename as a URI. Keep existing records until Replace
+    succeeds; a failed journal write must still block unsafe conversion work.
+    """
+    target = Path.GetFullPath(_safe_unicode(target))
+    folder = Path.GetDirectoryName(target)
+    temporary = Path.Combine(folder, "wo-" + System.Guid.NewGuid().ToString("N") + ".tmp")
+    stage = "creating parent folder"
+    try:
+        _ensure_directory(folder)
+        stage = "writing temporary file"
+        stream = System.IO.FileStream(temporary, System.IO.FileMode.CreateNew, System.IO.FileAccess.Write, getattr(System.IO.FileShare, "None"))
+        try:
+            document.Save(stream)
+            stream.Flush(True)
+        finally:
+            stream.Dispose()
+        stage = "replacing existing record" if File.Exists(target) else "installing new record"
+        if File.Exists(target):
+            File.Replace(temporary, target, None)
+        else:
+            File.Move(temporary, target)
+    except Exception, ex:
+        raise Exception("Could not save {0} while {1}. Record: {2} ({3} characters). Temporary: {4} ({5} characters). "
+                        "Check that the plugin folder is writable and still exists; deep install paths can exceed Windows/.NET path limits. "
+                        "Use the documented per-user Scripts location. Original error: {6}".format(description, stage, target, len(target), temporary, len(temporary), _safe_unicode(ex)))
+    finally:
+        try:
+            if File.Exists(temporary):
+                File.Delete(temporary)
+        except Exception:
+            pass  # Never hide the original write/replace failure with cleanup.
+
+
 def _write_text_file(path, content):
     """Write a UTF-8 text artifact using the .NET filesystem API."""
     File.WriteAllText(path, _safe_unicode(content), Encoding.UTF8)
@@ -399,6 +436,12 @@ def _parse_archive_listing(output_text, archive_path):
     return filtered
 
 
+def _is_macos_sidecar(member_name):
+    """Match the worker's narrow __MACOSX/._ attachment rule during analysis."""
+    parts = _safe_unicode(member_name).replace("\\", "/").split("/")
+    return "__MACOSX" in parts[:-1] and parts[-1].startswith("._")
+
+
 def _classify_image_format(counts):
     """Reduce supported page-extension counts to a smart-list label."""
     if counts["webp"] > 0 and counts["jpg"] == 0 and counts["jpeg"] == 0 and counts["png"] == 0:
@@ -471,7 +514,7 @@ def _scan_book(book, tool_path):
     for entry in entries:
         entry_path = _safe_unicode(entry.get("Path", ""))
         extension = Path.GetExtension(entry_path).lower()
-        if extension not in IMAGE_EXTENSIONS:
+        if extension not in IMAGE_EXTENSIONS or _is_macos_sidecar(entry_path):
             continue
         counts[extension.lstrip(".")] += 1
 
@@ -1460,16 +1503,7 @@ def _save_run_record(report_path, text, options=None, results=None, preview_stat
             node.SetAttribute("path", _safe_unicode(result.get("file_path", "")))
             node.SetAttribute("caption", _safe_unicode(result.get("caption", "")))
             parent.AppendChild(node)
-    temporary = record_path + "." + System.Guid.NewGuid().ToString("N") + ".tmp"
-    try:
-        document.Save(temporary)
-        if File.Exists(record_path):
-            File.Replace(temporary, record_path, None)
-        else:
-            File.Move(temporary, record_path)
-    finally:
-        if File.Exists(temporary):
-            File.Delete(temporary)
+    _save_xml_atomic(document, record_path, "run history")
 
 
 def _record_run_safely(report_path, text, options=None, results=None, preview_state=None):
@@ -1578,16 +1612,7 @@ def _save_settings(values):
         node.SetAttribute("key", key)
         node.SetAttribute("value", _safe_unicode(value))
         root.AppendChild(node)
-    temporary = SETTINGS_PATH + "." + System.Guid.NewGuid().ToString("N") + ".tmp"
-    try:
-        document.Save(temporary)
-        if File.Exists(SETTINGS_PATH):
-            File.Replace(temporary, SETTINGS_PATH, None)
-        else:
-            File.Move(temporary, SETTINGS_PATH)
-    finally:
-        if File.Exists(temporary):
-            File.Delete(temporary)
+    _save_xml_atomic(document, SETTINGS_PATH, "settings")
 
 
 def _unprocessed_book(book):
@@ -3010,17 +3035,7 @@ def _write_book_checkpoint(result, options, output_path, state, conversion=None)
     if state == "completed" and options.get("run_mode") == "Replace Originals" and output_path.lower() != source.lower():
         targets.append(_checkpoint_path(output_path, options))
     for target in targets:
-        _ensure_directory(Path.GetDirectoryName(target))
-        temporary = target + "." + System.Guid.NewGuid().ToString("N") + ".tmp"
-        try:
-            document.Save(temporary)
-            if File.Exists(target):
-                File.Replace(temporary, target, None)
-            else:
-                File.Move(temporary, target)
-        finally:
-            if File.Exists(temporary):
-                File.Delete(temporary)
+        _save_xml_atomic(document, target, "book checkpoint")
     if state in ["completed", "skipped", "retryable"] and File.Exists(_pending_checkpoint_path(source)):
         File.Delete(_pending_checkpoint_path(source))
 

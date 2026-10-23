@@ -519,13 +519,8 @@ def _record_worker_started(source, options, process):
         document = _read_checkpoint(path)
         document.DocumentElement.SetAttribute("workerPid", str(process.Id))
         document.DocumentElement.SetAttribute("workerStart", str(process.StartTime.ToUniversalTime().Ticks))
-        temporary = path + "." + System.Guid.NewGuid().ToString("N") + ".tmp"
-        try:
-            document.Save(temporary)
-            File.Replace(temporary, path, None)
-        finally:
-            if File.Exists(temporary):
-                File.Delete(temporary)
+        _save_xml_atomic(document, path, "worker checkpoint")
+
 
 
 class RecoveryForm(Form):

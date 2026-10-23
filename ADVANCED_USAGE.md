@@ -379,3 +379,21 @@ Comic artwork visible in the example screenshots belongs to its respective creat
 Published version 1.0.0 searches ComicRack Resources folders only; installing standalone 7-Zip does not resolve that discovery gap. It also omits 7za64.exe from one of those resource searches. Reinstalling standalone 7-Zip repeatedly does not fix either case.
 
 Version 1.0.1 adds standard Program Files, both 32/64-bit registry views and PATH discovery. After updating, restart ComicRack and run Tools & recovery > Check setup. Custom portable installations need their folder on PATH. Keep 7z.exe with the companion files supplied by its installer; do not copy just an executable into a different folder. Setup still performs a real tool check so a missing dependency is distinct from a discovery failure. 7-Zip is not bundled with this plugin.
+
+## Read-only extracted pages and macOS metadata
+
+Version 1.0.2 handles read-only attributes stored on pages or metadata inside an archive. Only generated extracted work files are made writable; the original comic and its permissions/ACLs remain unchanged. A different permission or file-lock problem still produces an error rather than being ignored.
+
+Image-looking `__MACOSX/._*` entries are AppleDouble sidecars by naming convention. They are preserved as attachments, excluded from page counts and image decoding, and still checked for byte identity and CRC integrity. This is deliberately narrow: normal images, including root-level `._` names or actual image files inside `__MACOSX`, keep normal validation.
+
+After updating and restarting ComicRack, retry the failed books. Reanalyze if their image-format/eligibility counts included sidecars. Completed books with unchanged files/settings can still be recognized by resume. If an older attempt has a pending checkpoint or recovery record, use Review interrupted work before retrying; the update does not silently delete retained old work folders or resolve ambiguous outputs.
+
+## Checkpoint XML temporary-path errors
+
+A `.xml.<random>.tmp` file is an intermediate journal file, not a file users should create. It may be absent because creation failed or because it was removed during error cleanup. Do not create dummy checkpoint files, delete all checkpoints or disable safety tracking to bypass a failed write.
+
+Version 1.0.1 appends a random suffix to an already long hashed checkpoint filename. This can exceed a legacy Windows/.NET path limit even if the final record path fits. A deleted/missing parent folder, restricted installation location or security software interfering with writes can also cause failures; the exact path/message is needed to distinguish them.
+
+Version 1.0.2 uses short same-folder temporary names and explicit XML streams, without renaming existing checkpoints. Failed writes retain existing records and block conversion where durable tracking is required. The revised message identifies the write stage, target and temporary paths/lengths. A final record path that is itself too long or an inaccessible folder can still fail.
+
+Use the documented writable per-user Scripts folder and avoid duplicate/nested installations. Check that the Checkpoints parent folders have not been removed while ComicRack is running. If asking for help, include the full error and path (redact your username, preserving the approximate path length). Changing the comic temporary work folder does not relocate checkpoint files.
