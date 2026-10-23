@@ -30,10 +30,12 @@ In my testing, I've typically seen **40% to 65% reductions in file size with no 
 ## Requirements and installation
 
 - **64-bit Windows**, ComicRack CE with scripting enabled, and 7-Zip (ComicRack's resource tools or a standalone Windows installation).
-- **Python 3.9+** available through `py` or `python`, plus Pillow: `py -3 -m pip install Pillow`. Pillow is used for validation/previews even with the recommended ImageMagick encoder.
+- **Python 3.9+ and Pillow**, installed separately. New to Python? Follow the [step-by-step Python/Pillow setup](ADVANCED_USAGE.md#install-python-and-pillow-on-windows), including the verification commands. Pillow is required for validation/previews even with ImageMagick.
 - **WinRAR only for CBR output**; reading CBR and converting it to CBZ do not need WinRAR.
 
 The main download includes the ImageMagick encoder and its license notices. No separate ImageMagick or Visual C++ runtime installation is needed for that bundle. Python/Pillow are installed separately.
+
+Install the prerequisites above first, then install the plugin:
 
 1. Run ComicRack CE once, then close it.
 2. Press **Win+R**, paste `%APPDATA%\cYo\ComicRack Community Edition`, and press Enter.

@@ -2,7 +2,75 @@
 
 Start with the [quick start in the README](README.md#quick-start). This guide keeps the storage, report and recovery details available when you need them.
 
-Jump to: [Smart lists](#comicrack-guru-cleanup-lists) | [Quality and actions](#actions-and-quality-settings) | [Pixel diagnostics](#quality-comparisons-and-pixel-diagnostics) | [Preview cleanup](#preview-storage-and-cleanup) | [Performance](#performance-and-large-batches) | [Resume](#continuing-after-a-stop-or-restart) | [Recovery](#replacement-recovery) | [History](#run-history) | [Setup](#setup-space-and-sleep)
+Jump to: [Python/Pillow setup](#install-python-and-pillow-on-windows) | [Plugin folder](#installation-folder-and-missing-scripts-folder) | [Smart lists](#comicrack-guru-cleanup-lists) | [Quality and actions](#actions-and-quality-settings) | [Pixel diagnostics](#quality-comparisons-and-pixel-diagnostics) | [Preview cleanup](#preview-storage-and-cleanup) | [Performance](#performance-and-large-batches) | [Resume](#continuing-after-a-stop-or-restart) | [Recovery](#replacement-recovery) | [History](#run-history) | [Setup](#setup-space-and-sleep)
+
+## Install Python and Pillow on Windows
+
+Python runs the conversion helper. Pillow is a Python package used for page validation and preview support; it is required even when ImageMagick does the encoding. You do not need a code editor, development environment or virtual environment for this setup. Analyze Only does not require Python/Pillow.
+
+### 1. Close ComicRack and install Python
+
+Save your work and close ComicRack, including any tray instance. On Windows 10/11, open the [official Python Windows downloads page](https://www.python.org/downloads/windows/), download **Python Install Manager**, then open the downloaded installer and select **Install**. This installs the manager; the next step installs Python itself.
+
+If Python is already installed, first try `py -3 --version` in Command Prompt as described below. If it reports Python 3.9 or newer, you can skip the runtime-install command and go straight to installing Pillow. Use the same Windows account that runs ComicRack.
+
+### 2. Open Command Prompt and install Python itself
+
+Click **Start**, type **Command Prompt**, and open it. A normal prompt looks like `C:\Users\YourName>`; you do not need to change folders. Paste the following command, press Enter and wait for it to finish:
+
+```bat
+py install 3.13
+```
+
+This installs Python 3.13, a supported choice for the plugin. The manager and this command are documented in [Python's Windows guide](https://docs.python.org/3/using/windows.html).
+
+Run all commands here in **Command Prompt**, not in a Python window showing `>>>`. If you see `>>>`, type `exit()` and press Enter to leave Python. Do not type the prompt symbols themselves, and run each command separately.
+
+### 3. Install Pillow
+
+In the same Command Prompt, run these commands one at a time:
+
+```bat
+py -3 -m pip install --upgrade pip
+```
+
+```bat
+py -3 -m pip install --upgrade Pillow
+```
+
+Wait for each to finish. The Pillow command should end with **Successfully installed** or **Requirement already satisfied**. Pillow is installed into the Python selected by `py -3`, matching the plugin's preferred launcher. These commands follow [Pillow's pip installation instructions](https://pillow.readthedocs.io/en/stable/installation/basic-installation.html).
+
+### 4. Check that both work
+
+Run:
+
+```bat
+py -3 --version
+```
+
+You should see `Python 3.x.x`, with a version of at least 3.9. Then run:
+
+```bat
+py -3 -c "from PIL import Image, ImageCms; print('Pillow is working')"
+```
+
+You should see **Pillow is working**, without an error traceback. Do not continue past installation errors; use the troubleshooting table below.
+
+### 5. Restart ComicRack and check setup
+
+Finish [installing the plugin folder](#installation-folder-and-missing-scripts-folder), then start ComicRack again. Select a disposable test comic, open **Optimize Archives**, choose **Create WebP Copies**, and open **Tools & recovery > Check setup**. Selecting a conversion action checks Python/Pillow and the encoder; Analyze Only deliberately does not check those conversion dependencies.
+
+### If a command fails
+
+| What you see | What to do |
+|---|---|
+| `py` is not recognized | Close Command Prompt and open a new one after installing the manager. If it still fails, use the command/alias troubleshooting in the official Python Windows guide linked above. |
+| `py install 3.13` reports it cannot open a file named `install` | An older Python launcher is handling `py`. If `py -3 --version` already works, skip runtime installation. Otherwise, after installing Python Install Manager, try `pymanager install 3.13`. |
+| `No module named pip` | Run `py -3 -m ensurepip --upgrade`, then repeat step 3. |
+| `No module named PIL` | Repeat the Pillow command in step 3 using `py -3`, then repeat the verification. The install name is **Pillow**; the import name is **PIL**. |
+| The command works but the plugin still cannot find Python | Fully close/restart ComicRack after installation so it inherits the updated environment. Run Check setup with a conversion action selected; include its exact error if asking for help. |
+
+If your working Python installation only responds to `python` rather than `py -3`, use `python` in place of `py -3` for the pip and verification commands. Confirm `python --version` reports Python 3.9+ first; the plugin also supports that command. Avoid installing Pillow into a separate virtual environment that ComicRack does not use.
 
 ## Installation folder and missing Scripts folder
 
