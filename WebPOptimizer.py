@@ -135,25 +135,84 @@ def _format_size(value):
 # ===========================================================================
 # [P03] Dependency discovery and responsive subprocess I/O
 # ===========================================================================
-def _find_archive_tool():
-    """Locate ComicRack resource executables; do not install tooling."""
-    candidates = [
-        Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "Resources", "7z64.exe"),
-        Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "Resources", "7z.exe"),
-        Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "Resources", "7za.exe"),
-        Path.Combine(ROOT_DIR, "ComicRackCE_nightly", "Resources", "7z64.exe"),
-        Path.Combine(ROOT_DIR, "ComicRackCE_nightly", "Resources", "7z.exe"),
-        Path.Combine(ROOT_DIR, "ComicRackCE_nightly", "Resources", "7za64.exe"),
-        Path.Combine(ROOT_DIR, "ComicRackCE_nightly", "Resources", "7za.exe"),
-        Path.Combine(ROOT_DIR, "Resources", "7z64.exe"),
-        Path.Combine(ROOT_DIR, "Resources", "7z.exe"),
-        Path.Combine(ROOT_DIR, "Resources", "7za64.exe"),
-        Path.Combine(ROOT_DIR, "Resources", "7za.exe"),
-    ]
-    for candidate in candidates:
-        if File.Exists(candidate):
-            return candidate
+def _archive_registry_roots():
+    """Read both Windows registry views so a 32-bit ComicRack finds x64 7-Zip.
+
+    Unavailable keys/permissions are normal; standard folders and PATH are
+    independent fallbacks. Registry data is only used as a local file path.
+    """
+    from Microsoft.Win32 import RegistryKey, RegistryHive, RegistryView
+    roots = []
+    for hive in [RegistryHive.LocalMachine, RegistryHive.CurrentUser]:
+        for view in [RegistryView.Registry64, RegistryView.Registry32]:
+            base, key = None, None
+            try:
+                base = RegistryKey.OpenBaseKey(hive, view)
+                key = base.OpenSubKey(r"SOFTWARE\7-Zip")
+                if key is not None:
+                    for value in ["Path64", "Path", "Path32"]:
+                        path = key.GetValue(value)
+                        if path:
+                            roots.append(_safe_unicode(path))
+            except Exception:
+                pass
+            finally:
+                if key is not None:
+                    key.Dispose()
+                if base is not None:
+                    base.Dispose()
+    return roots
+
+
+def _find_archive_tool(resource_roots=None, install_roots=None, registry_roots=None, path_value=None):
+    """Find an absolute 7-Zip executable without installing or copying tools.
+
+    Preserve ComicRack resource precedence, then accept normal/custom standalone
+    installs and PATH. Optional search inputs let tests model other machines
+    without touching the real registry, environment or installation folders.
+    """
+    if resource_roots is None:
+        resource_roots = [Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "Resources"),
+                          Path.Combine(ROOT_DIR, "ComicRackCE_nightly", "Resources"),
+                          Path.Combine(ROOT_DIR, "Resources")]
+    if install_roots is None:
+        install_roots = [Path.Combine(root, "7-Zip") for root in
+                         [Environment.GetEnvironmentVariable(name) for name in
+                          ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"]] if root]
+    if registry_roots is None:
+        registry_roots = _archive_registry_roots()
+    if path_value is None:
+        path_value = Environment.GetEnvironmentVariable("PATH") or ""
+    groups = [(resource_roots, ["7z64.exe", "7z.exe", "7za64.exe", "7za.exe"]),
+              (list(install_roots) + list(registry_roots), ["7z.exe"]),
+              (path_value.split(";"), ["7z.exe"])]
+    seen = set()
+    for roots, names in groups:
+        for root in roots:
+            try:
+                root = Environment.ExpandEnvironmentVariables(_safe_unicode(root).strip().strip('"'))
+                # Empty/relative PATH entries must not select an executable from
+                # an incidental working directory. Return a resolved file path.
+                if not root or not Path.IsPathRooted(root):
+                    continue
+                for name in names:
+                    candidate = Path.GetFullPath(Path.Combine(root, name))
+                    identity = candidate.lower()
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    if File.Exists(candidate):
+                        return candidate
+            except Exception:
+                continue
     return None
+
+
+def _archive_tool_missing_message():
+    return ("7-Zip was not found. Install the Windows version of 7-Zip (including its command-line 7z.exe), "
+            "or restore ComicRack's Resources archive tools. Checked ComicRack resources, "
+            "standard Program Files folders, registered 7-Zip install folders and PATH. "
+            "For a custom portable install, add its folder to PATH and restart ComicRack, then run Tools & recovery > Check setup.")
 
 
 def _find_python_tool():
@@ -3038,7 +3097,7 @@ def _run_phase_one(books, options=None):
 
     tool_path = _find_archive_tool()
     if not tool_path:
-        MessageBox.Show("Could not find 7-Zip analysis tooling. Expected to find 7za in the ComicRack resources or ComicRackCE_nightly resources folder.", "WebP Optimizer", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        MessageBox.Show(_archive_tool_missing_message(), "WebP Optimizer", MessageBoxButtons.OK, MessageBoxIcon.Error)
         return
 
     _ensure_directory(REPORT_DIR)
@@ -3107,7 +3166,7 @@ def _run_phase_two(books):
 
     tool_path = _find_archive_tool()
     if not tool_path:
-        MessageBox.Show("Could not find 7-Zip tooling. Expected to find a 7z or 7za executable in the ComicRack resources or ComicRackCE_nightly resources folder.", "WebP Optimizer", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        MessageBox.Show(_archive_tool_missing_message(), "WebP Optimizer", MessageBoxButtons.OK, MessageBoxIcon.Error)
         return
 
     if _safe_unicode(options.get("run_mode", "")) == "Analyze Only":

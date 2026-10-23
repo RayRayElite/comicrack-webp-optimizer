@@ -289,3 +289,9 @@ ImageMagick now receives page data through file handles, so deeply nested extrac
 An older failed run can leave a pending converted archive. New code does not delete or install it. Inspect the named files using the recovery workflow, resolve any old temporary output, then explicitly allow retry after confirming its worker has stopped.
 
 Comic artwork visible in the example screenshots belongs to its respective creators and publishers. The plugin MIT license does not apply to that artwork.
+
+## 7-Zip is installed but reported missing
+
+Published version 1.0.0 searches ComicRack Resources folders only; installing standalone 7-Zip does not resolve that discovery gap. It also omits 7za64.exe from one of those resource searches. Reinstalling standalone 7-Zip repeatedly does not fix either case.
+
+Version 1.0.1 adds standard Program Files, both 32/64-bit registry views and PATH discovery. After updating, restart ComicRack and run Tools & recovery > Check setup. Custom portable installations need their folder on PATH. Keep 7z.exe with the companion files supplied by its installer; do not copy just an executable into a different folder. Setup still performs a real tool check so a missing dependency is distinct from a discovery failure. 7-Zip is not bundled with this plugin.

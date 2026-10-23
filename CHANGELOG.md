@@ -1,5 +1,13 @@
 # Release notes
 
+## 1.0.1 - 2026-10-22
+
+Fix 7-Zip being reported missing despite a standalone installation.
+
+- Recognize standalone 7-Zip in standard Program Files folders, custom registered installation paths (both Windows registry views) and PATH, while preserving ComicRack Resources precedence.
+- Include 7za64.exe in the primary ComicRack Resources search and explain all supported locations in the missing-tool message.
+- Test absent ComicRack resources, installed/custom/PATH discovery and real CBZ listing from a standalone-shaped tool folder. No encoder, replacement or checkpoint policy changes.
+
 ## 1.0.0 - 2026-10-22
 
 First public stable release of WebP Optimizer for ComicRack Community Edition.

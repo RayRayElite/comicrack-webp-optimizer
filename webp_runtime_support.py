@@ -274,7 +274,7 @@ def _setup_checks_core(options):
     archive = _find_archive_tool() or ""
     if options.get("run_mode") == "Analyze Only":
         if not archive:
-            return {"STATUS": "ERROR", "CHECK_MESSAGE": "7-Zip missing. Restore ComicRack's Resources archive tool."}
+            return {"STATUS": "ERROR", "CHECK_MESSAGE": _archive_tool_missing_message()}
         info = ProcessStartInfo()
         info.FileName, info.Arguments = archive, "i"
         info.UseShellExecute, info.CreateNoWindow = False, True

@@ -2,7 +2,7 @@
 
 Make room in your comic collection from inside **ComicRack Community Edition**. Analyze CBZ/CBR archives, compare quality, and convert eligible JPEG pages to WebP. Replace originals without keeping permanent duplicates, or create separate copies.
 
-**Current release: 1.0.0**
+**Current release: 1.0.1**
 
 [Downloads](https://github.com/RayRayElite/comicrack-webp-optimizer/releases) | [User guide](ADVANCED_USAGE.md) | [Report a bug](https://github.com/RayRayElite/comicrack-webp-optimizer/issues) | [Contribute](CONTRIBUTING.md)
 
@@ -29,7 +29,7 @@ In my testing, I've typically seen **40% to 65% reductions in file size with no 
 
 ## Requirements and installation
 
-- **64-bit Windows**, ComicRack CE with scripting enabled, and its 7-Zip tool.
+- **64-bit Windows**, ComicRack CE with scripting enabled, and 7-Zip (ComicRack's resource tools or a standalone Windows installation).
 - **Python 3.9+** available through `py` or `python`, plus Pillow: `py -3 -m pip install Pillow`. Pillow is used for validation/previews even with the recommended ImageMagick encoder.
 - **WinRAR only for CBR output**; reading CBR and converting it to CBZ do not need WinRAR.
 

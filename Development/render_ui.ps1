@@ -1,4 +1,4 @@
-param([switch]$HistoryHostSmoke, [switch]$TableHeaderSmoke, [switch]$ModalHistorySmoke, [int]$HistoryStackBytes = 0)
+param([switch]$ArchiveDiscoverySmoke, [switch]$HistoryHostSmoke, [switch]$TableHeaderSmoke, [switch]$ModalHistorySmoke, [int]$HistoryStackBytes = 0)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -28,6 +28,10 @@ except:
         tb = tb.tb_next
     raise
 '@, $scope) | Out-Null
+if ($ArchiveDiscoverySmoke) {
+    $engine.Execute("exec compile(File.ReadAllText(Path.Combine(SCRIPT_DIR, 'Development', 'test_archive_discovery.py')), 'test_archive_discovery.py', 'exec')", $scope) | Out-Null
+    exit 0
+}
 if ($HistoryHostSmoke) {
     $engine.Execute(@'
 fixture = Path.Combine(SCRIPT_DIR, 'Development', 'Test Environment', 'History Process Checks', System.Guid.NewGuid().ToString('N'))
@@ -279,6 +283,7 @@ bitmap.Save(Path.Combine(render_dir, 'report.png'), ImageFormat.Png)
 bitmap.Dispose()
 report.Dispose()
 try:
+    exec compile(File.ReadAllText(Path.Combine(SCRIPT_DIR, 'Development', 'test_archive_discovery.py')), 'test_archive_discovery.py', 'exec')
     exec compile(File.ReadAllText(Path.Combine(SCRIPT_DIR, 'Development', 'test_runtime_features.py')), 'test_runtime_features.py', 'exec')
     exec compile(File.ReadAllText(Path.Combine(SCRIPT_DIR, 'Development', 'test_preview_difference.py')), 'test_preview_difference.py', 'exec')
     exec compile(File.ReadAllText(Path.Combine(SCRIPT_DIR, 'Development', 'test_history.py')), 'test_history.py', 'exec')
