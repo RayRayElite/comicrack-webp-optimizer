@@ -4,6 +4,22 @@ Start with the [quick start in the README](README.md#quick-start). This guide ke
 
 Jump to: [Smart lists](#comicrack-guru-cleanup-lists) | [Quality and actions](#actions-and-quality-settings) | [Pixel diagnostics](#quality-comparisons-and-pixel-diagnostics) | [Preview cleanup](#preview-storage-and-cleanup) | [Performance](#performance-and-large-batches) | [Resume](#continuing-after-a-stop-or-restart) | [Recovery](#replacement-recovery) | [History](#run-history) | [Setup](#setup-space-and-sleep)
 
+## Installation folder and missing Scripts folder
+
+For a normal installed copy of ComicRack CE, use the current Windows user's folder:
+
+```text
+%APPDATA%\cYo\ComicRack Community Edition\Scripts
+```
+
+Press Win+R and paste `%APPDATA%\cYo\ComicRack Community Edition` to open the parent, even when AppData is hidden. Start ComicRack CE once first. If **Scripts** is missing, create that folder yourself; it need not already exist on a fresh installation. Extract the download's **WebP Optimizer** folder into it, with `WebPOptimizer.py`, `Package.ini`, the other runtime files and `Magick` directly inside that plugin folder. Restart ComicRack afterward.
+
+Do not put the ZIP itself in Scripts or add an extra nesting level such as `Scripts\WebP Optimizer\WebP Optimizer`. Use the CE folder named **ComicRack Community Edition**, not the older **ComicRack** folder. Preserve your existing settings and Reports when updating.
+
+ComicRack CE also supports a Scripts folder in its program installation directory, as described in its [upstream installation guidance](https://github.com/maforget/ComicRackCE#plugins). Prefer the per-user AppData location for a normal installation because the plugin writes settings, reports and checkpoints beside its code. A Program Files installation may restrict those writes. Do not install duplicate copies in both locations.
+
+For portable or alternate-configuration installations, the active data location can differ. Check the active ComicRack configuration rather than creating folders at guessed paths. If the plugin does not appear after restart, check **Edit > Preferences > Scripts** for script availability/enabling and confirm the extracted layout above. This plugin is a manual ZIP installation; the Script Packages installer expects a `.crplugin` file.
+
 ## ComicRack Guru cleanup lists
 
 I added these after **1.8 Convert to CBZ** in the Guru workflow's **01 - Clean Up** section. Search **Library** and choose **Custom Value** for each rule. Enter the field names and values below exactly; leave the value empty where it says blank. Use the normal **is** operator without negating it.

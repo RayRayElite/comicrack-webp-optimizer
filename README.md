@@ -35,9 +35,19 @@ In my testing, I've typically seen **40% to 65% reductions in file size with no 
 
 The main download includes the ImageMagick encoder and its license notices. No separate ImageMagick or Visual C++ runtime installation is needed for that bundle. Python/Pillow are installed separately.
 
-1. Close ComicRack.
-2. Extract the ZIP's **WebP Optimizer** folder into your ComicRack CE **Scripts** folder. This is a manual-install ZIP, not a `.crplugin` installer.
-3. Restart ComicRack and run **Tools & recovery > Check setup** in the plugin.
+1. Run ComicRack CE once, then close it.
+2. Press **Win+R**, paste `%APPDATA%\cYo\ComicRack Community Edition`, and press Enter.
+3. Create a folder named **Scripts** there if it does not exist.
+4. Extract the ZIP's **WebP Optimizer** folder into **Scripts**. This is a manual-install ZIP, not a `.crplugin` installer.
+5. Restart ComicRack, open **Optimize Archives**, and run **Tools & recovery > Check setup**.
+
+The finished layout should include:
+
+```text
+%APPDATA%\cYo\ComicRack Community Edition\Scripts\WebP Optimizer\WebPOptimizer.py
+```
+
+Keep the other plugin files and `Magick` folder alongside it. Avoid an extra nested `WebP Optimizer` folder. AppData is normally hidden; **Win+R** opens it directly. For portable/custom installations or a plugin that does not appear, see [installation help](ADVANCED_USAGE.md#installation-folder-and-missing-scripts-folder).
 
 When updating, keep your existing `settings.xml` and `Reports` folder. Source checkouts exclude the encoder executable; see the [developer instructions](Development/README.md).
 
