@@ -68,6 +68,55 @@ namespace WebPOptimizerRuntime {
         }
     }
 
+    // Native disabled button text is almost black on dark backgrounds.
+    // Keep the real Button behavior/accessibility; customize only dark painting.
+    public sealed class ThemeButton : System.Windows.Forms.Button {
+        private bool dark, hover, pressed;
+        public bool Dark { get { return dark; } set { dark = value; Invalidate(); } }
+        protected override void OnPaint(System.Windows.Forms.PaintEventArgs e) {
+            if (!dark) { base.OnPaint(e); return; }
+            bool primary = FindForm() != null && FindForm().AcceptButton == this;
+            var back = Enabled && primary ? System.Drawing.Color.FromArgb(36, 104, 110) : System.Drawing.Color.FromArgb(39, 42, 47);
+            if (Enabled && pressed) back = System.Drawing.Color.FromArgb(58, 69, 80);
+            else if (Enabled && hover) back = System.Drawing.Color.FromArgb(49, 55, 64);
+            e.Graphics.Clear(back);
+            var border = Enabled && (Focused || primary) ? System.Drawing.Color.FromArgb(103, 149, 164) : System.Drawing.Color.FromArgb(72, 78, 87);
+            using (var pen = new System.Drawing.Pen(border)) e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+            var fore = Enabled ? System.Drawing.Color.FromArgb(218, 223, 229) : System.Drawing.Color.FromArgb(151, 159, 169);
+            var flags = System.Windows.Forms.TextFormatFlags.HorizontalCenter | System.Windows.Forms.TextFormatFlags.VerticalCenter | System.Windows.Forms.TextFormatFlags.EndEllipsis;
+            if (!ShowKeyboardCues) flags |= System.Windows.Forms.TextFormatFlags.HidePrefix;
+            System.Windows.Forms.TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, fore, flags);
+            if (Focused && ShowFocusCues) System.Windows.Forms.ControlPaint.DrawFocusRectangle(e.Graphics, System.Drawing.Rectangle.Inflate(ClientRectangle, -4, -4), fore, back);
+        }
+        protected override void OnMouseEnter(EventArgs e) { hover = true; base.OnMouseEnter(e); Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { hover = false; pressed = false; base.OnMouseLeave(e); Invalidate(); }
+        protected override void OnMouseDown(System.Windows.Forms.MouseEventArgs e) { pressed = true; base.OnMouseDown(e); Invalidate(); }
+        protected override void OnMouseUp(System.Windows.Forms.MouseEventArgs e) { pressed = false; base.OnMouseUp(e); Invalidate(); }
+        protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+    }
+
+    public sealed class ThemeMenu : System.Windows.Forms.ContextMenuStrip {
+        private bool dark;
+        private sealed class Palette : System.Windows.Forms.ProfessionalColorTable {
+            public override System.Drawing.Color ToolStripDropDownBackground { get { return System.Drawing.Color.FromArgb(39,42,47); } }
+            public override System.Drawing.Color MenuItemSelected { get { return System.Drawing.Color.FromArgb(55,70,78); } }
+            public override System.Drawing.Color MenuItemBorder { get { return System.Drawing.Color.FromArgb(72,78,87); } }
+            public override System.Drawing.Color MenuBorder { get { return System.Drawing.Color.FromArgb(72,78,87); } }
+            public override System.Drawing.Color ImageMarginGradientBegin { get { return ToolStripDropDownBackground; } }
+            public override System.Drawing.Color ImageMarginGradientMiddle { get { return ToolStripDropDownBackground; } }
+            public override System.Drawing.Color ImageMarginGradientEnd { get { return ToolStripDropDownBackground; } }
+        }
+        public bool Dark { get { return dark; } set {
+            dark = value;
+            Renderer = value ? new System.Windows.Forms.ToolStripProfessionalRenderer(new Palette()) : new System.Windows.Forms.ToolStripProfessionalRenderer();
+            BackColor = value ? System.Drawing.Color.FromArgb(39,42,47) : System.Drawing.SystemColors.Menu;
+            ForeColor = value ? System.Drawing.Color.FromArgb(218,223,229) : System.Drawing.SystemColors.MenuText;
+            foreach (System.Windows.Forms.ToolStripItem item in Items) item.ForeColor = ForeColor;
+        } }
+    }
+
     // Native combo themes ignore BackColor for disabled/closed dropdown faces.
     // Keep standard keyboard/dropdown behavior and repaint only that face.
     public sealed class ThemeComboBox : System.Windows.Forms.ComboBox {

@@ -89,7 +89,9 @@ try:
         return result
     _run_conversion_helper = observed_helper
     class SilentReport(object):
-        def __init__(self, *args):
+        def Dispose(self): pass
+        def __init__(self, *args, **kwargs):
+            self.retry_request = None
             pass
         def ShowDialog(self):
             pass

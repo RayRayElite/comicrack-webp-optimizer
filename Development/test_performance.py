@@ -151,7 +151,9 @@ with patch.object(h, 'encode_with_pillow', side_effect=fail_one):
     try:
         h.convert_pages(paths, 'Q80', 'Pillow', 'No Resize', 4)
     except RuntimeError as error:
-        assert 'Injected' in str(error)
+        assert isinstance(error, h.PageProcessingError)
+        assert error.fields['ERROR_CODE'] == 'ENCODER_ERROR'
+        assert 'Injected' in error.fields['ERROR_DETAIL']
     else:
         raise AssertionError('Worker error swallowed')
 assert len(finished) == 4

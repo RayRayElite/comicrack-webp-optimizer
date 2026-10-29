@@ -39,6 +39,9 @@ Run commands from the ComicRack appdata workspace as shown in [Development/READM
 | Native streaming, interrupted-session resume and pending-output guards | Development/test_batch.py via render_ui.ps1 |
 | Encoder availability and generated image conversion | Development/test_encoders.py |
 | Read-only extraction, AppleDouble attachments and strict integrity | Development/test_archive_edge_cases.py; test_macos_scan.py through render_ui.ps1 |
+| Page failure categories, protocol and report presentation | Development/test_error_explanations.py; test_error_reports.py via render_ui.ps1 |
+| Result sorting/details/colors, Windows argv and Unicode archive output | test_results_review.py/test_path_arguments.py via render_ui.ps1; test_unicode_archive_errors.py |
+| Early/late CBR destination collision and zero-worker guard | Development/test_destination_conflicts.py via render_ui.ps1 |
 | Output/page collisions and archive validation | Development/test_safety.py |
 | Profile regression using local Adobe RGB sample | Development/test_color_fidelity.py |
 | Preview RGB metrics/heatmap, coordinate mapping and async lifecycle | Development/test_preview_difference.py through render_ui.ps1 |

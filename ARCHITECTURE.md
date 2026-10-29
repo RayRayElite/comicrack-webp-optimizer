@@ -124,7 +124,7 @@ P21 explicitly loads `webp_runtime_support.py` into the adapter namespace. This 
 
 The worker emits `PROGRESS=STAGE|done|total`; the adapter queues events and updates controls on its UI flow. Progress messages are excluded from terminal result parsing. Setup/archive diagnostic modes reuse actual encoding and validation, without modifying source archives.
 
-Checkpoint schema 2 uses an explicit compatibility marker. Bump CHECKPOINT_POLICY_VERSION when conversion semantics make prior results incompatible; do not tie it to display text or maintenance timestamps. Pending attempts remain independently indexed. Recovery checks require unchanged snapshots and no known active helper before archiving tracking records; archives themselves are never deleted or installed by this UI.
+Checkpoint schema 2 uses an explicit compatibility marker. Bump CHECKPOINT_POLICY_VERSION when conversion semantics make prior results incompatible; do not tie it to display text or maintenance timestamps. Pending attempts remain independently indexed. Recovery checks require unchanged snapshots and no known active helper before archiving tracking records; archives themselves are never deleted or installed by this UI. The reviewer supports multi-selection: each record is checked and resolved independently, selection changes clear the shared helper-stopped confirmation, and partial failures remain available in batch details. Results can open the reviewer with matching paths focused. Only current-run results can prepare a retry, matching successfully cleared paths back to captured ComicRack book references; historical reports cannot reconstruct library selections. Preparing returns to the normal options and preflight flow and does not start conversion.
 
 S06 applies an optional dark palette after each native dialog is constructed, keeping original control colors for reversal and leaving picture pixels alone. Constructor wrappers also cover dialogs opened from run history. Theme preference is a normal saved option; an unsaved preview is reset when options close. The technical reader uses RichTextBox for formatting/search/wrapping, while the authoritative report string remains unchanged for copying and saving. Native RichTextBox content may be absent from DrawToBitmap test renders; tests separately assert complete text and selection navigation.
 
@@ -176,3 +176,55 @@ The adapter `_is_macos_sidecar` and worker `is_macos_sidecar` share a narrow pat
 ## Atomic XML record writes
 
 P02 `_save_xml_atomic` owns checkpoint, worker-identity, history and settings writes. It creates parent folders, opens a short unique same-folder temporary file exclusively, saves through FileStream and flushes before Move/Replace. The final record's path/schema is unchanged. Existing records remain in place on failure; cleanup cannot mask the original error. Diagnostics name the operation and both path lengths. Do not restore target-name-plus-GUID temporary paths or fall back to deleting a durable record before replacement. Native `test_checkpoint_io.py` covers path geometry, characters and actual file locks.
+
+
+## Structured page failure explanations
+
+H06 PageProcessingError carries ERROR_CODE, ERROR_PAGE, ERROR_STAGE, ERROR_ACTION and ERROR_DETAIL alongside an actionable MESSAGE. explain_page_failure checks environmental exceptions first, then performs a strict source load only after a page error. A readable source does not become a corruption claim merely because an encoder failed. Raw diagnostics are escaped onto one protocol line. The main worker emits these fields; P09 includes them in normal/per-quality technical reports while result rows and workflow reasons use MESSAGE. Successful image bytes and checkpoint compatibility are unchanged. Tests: test_error_explanations.py and native test_error_reports.py.
+
+
+## Results review and path/Unicode transport
+
+P17 stores each result row with its original per-book lines and stable index in Tag. ResultRowComparer sorts statuses semantically and reductions numerically, keeping missing measurements last. ResultDetailsForm is read-only and copies/saves only the selected block with report context. Color toggling changes row foregrounds only; S06 reapplies them after theme changes. No report/history/checkpoint content changes on sorting or color toggles.
+
+P03 _quote_argument implements Windows argv backslash-before-quote rules. _normalize_work_directory removes paired outer quotes, expands environment variables and validates the selected folder without rewriting comic names. Python stdout/stderr and matching .NET readers use UTF-8; 7-Zip name output explicitly uses -sccUTF-8. Keep both ends coordinated. Generated tests cover native Windows argv, trailing slashes, quoted folders, cp1252 environment/Unicode archives and archive-header/collision diagnostics.
+
+
+## Result preferences and replacement destination preflight
+
+P17 stores results_errors_first/results_status_colors/results_sort_column/results_sort_ascending in the existing settings XML, merging other keys. Restore runs under a guard to avoid writes during construction/theme application; only explicit toggle/sort changes save. Sort columns use displayed base names rather than indices so different report types can ignore unavailable columns safely. Tests redirect SETTINGS_PATH and restore it afterward.
+
+_replacement_destination_conflict returns a structured DESTINATION_EXISTS before normal conversion starts for extension-changing replacement. The runner must not start a helper or write new pending checkpoints for known conflicts; any owned prefetch cache is cleaned through existing guarded logic. _finalize_replacement rechecks to cover races and retains converted output when a late conflict appears. Existing source/destination and older pending/recovery records are not resolved automatically.
+
+
+## Results scale, retry and support information
+
+P17 retains parsed report records separately from native ListView rows. Filters/search operate on the records, sorting covers the entire matching set, and only 250 rows are materialized per page. Status classification uses original report fields; friendly labels never change stored status or library values. Search is debounced and its timer/tooltip are disposed with the form. Summary extraction reads only the header. Technical text is loaded on first tab activation (including a tab selected before Show), with per-heading formatting disabled above one million characters. The authoritative report remains intact.
+
+Current-run results receive captured book references and an options snapshot. Retry returns only selected error records whose original paths still match those references. It strips transient cache/progress state and closes results. The public hook loops back to options without recursive modal execution; preflight, setup, pending-work and overwrite safeguards run normally. History windows have no live library references and cannot initiate this retry route. New history records whitelist additional settings for accurate review; unknown historical settings are never inferred as safe defaults.
+
+Support information is prepared locally in an editable details window. Dependency discovery is explicitly separate from the optional functional setup check. Copy/save reads the edited text, not its unredacted initial value. No publishing or automatic clipboard action occurs. Setup checks use the existing disposable-file checks and block closing the details window while those checks are active.
+
+Development/test_results_review.py includes a generated 125,001-book scale test, global paging/sorting/filtering checks, failed-only retry preparation and editable support/setup behavior. It does not claim throughput or memory acceptance for conversion of a real collection that size.
+
+
+## Shared UI conventions
+
+S06 `_polish_dialog` applies Segoe UI/Font autoscaling, spatial tab order, accessible field names, contextual Ctrl+F, table hover hints and a CancelButton only for review/cancel windows. Existing busy FormClosing guards remain authoritative; progress retains its safe-stop route. Normal windows fit the current screen working area only within their minimum sizes. Benchmark setup has a deliberate fixed size; benchmark result tabs and footer actions resize with the window.
+
+`ThemeButton` inherits the native Button behavior and accessibility. Only dark painting is customized for readable disabled labels, hover/pressed states, default/focus outlines and keyboard focus cues; light mode uses base rendering. All runtime button factories share this implementation. Text/table border styles are saved independently and restored when leaving dark mode. Comic picture pixels are never themed.
+
+
+## Presentation hierarchy and result selection lifecycle
+
+S07 `_compose_dialog_design` groups existing controls into action/outcome surfaces, introduces muted supporting text and disclosure menus, and lays out an inline selected-book explanation. It runs after original construction and before shared keyboard/theme setup. `_DIALOG_TYPES` retains actual dialog identities even when diagnostic harnesses replace public factories. No encoding/checkpoint policy lives in this layer. Surfaces and muted roles are restored explicitly in both palettes; newly created buttons/labels have explicit light baselines to avoid inheriting a dark parent during construction.
+
+ThemeMenu keeps standard ToolStrip interaction with an optional dark color table. Secondary tools remain reachable via More; menu enabled states are checked when opening. Disposal releases menus with their owner. Primary dark buttons use a restrained teal fill; comic pixels are never themed.
+
+Native list selection events can arrive while rows are being cleared, detached or disposed. P17 `_selected_result_rows` rejects missing Tag/record data and disposed/refreshing state; actions and inline explanations share this snapshot. `_render_result_page` suppresses selection reactions until the table rebuild completes. A regression injects a missing Tag on a selected native row, filters/rebuilds and closes the selected report; no data repair or report rewriting is involved.
+
+
+The same S07 surfaces cover secondary options tabs and preview chrome. Preflight stores a read-only options/count snapshot solely to describe the review consequence; it does not bypass the existing confirmation. Setup updates its readiness heading while retaining complete diagnostic text and an explicit clipboard action. Recovery hints explain availability without changing retry guards. The temporary-folder field has its own subdued border, retaining the original TextBox/text validation path. Performance layout keeps all original controls visible within the tab.
+
+
+P06 records original Windows read-only state as read_only (Yes/No/Unknown); P08 applies WebPReadOnly independently from format/workflow status. Missing/inaccessible files must never be labeled writable. Normal conversion/resume refreshes the current source/final-path flag, while tests retain the analysis value. Attribute detection does not change flags or ACLs. The value is a scan snapshot, not a live smart-list filesystem query.

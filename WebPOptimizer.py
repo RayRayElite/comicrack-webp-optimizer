@@ -139,8 +139,39 @@ def _escape_xml_attribute(value):
 
 
 def _quote_argument(value):
-    """Quote one argument for ProcessStartInfo.Arguments, not for a shell."""
-    return '"{0}"'.format(_safe_unicode(value).replace('"', '\\"'))
+    """Windows argv quoting, including trailing backslashes before the end quote."""
+    result, slashes = ['"'], 0
+    for character in _safe_unicode(value):
+        if character == "\\":
+            slashes += 1
+        elif character == '"':
+            result.append("\\" * (slashes * 2 + 1) + '"')
+            slashes = 0
+        else:
+            result.append("\\" * slashes + character)
+            slashes = 0
+    result.append("\\" * (slashes * 2) + '"')
+    return "".join(result)
+
+
+def _clean_work_directory_input(value):
+    value = _safe_unicode(value).strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        value = value[1:-1].strip()
+    return Environment.ExpandEnvironmentVariables(value) if value else ""
+
+
+def _normalize_work_directory(value):
+    """Accept Explorer's Copy as path quotes; explain invalid input, never rename files."""
+    value = _clean_work_directory_input(value)
+    if not value:
+        return ""
+    invalid = [c for c in value if ord(c) < 32 or c in '<>"|?*']
+    if invalid or ':' in value[2:]:
+        raise ValueError("Temporary storage contains characters Windows cannot use in a folder path. Use Browse to choose the folder. Spaces, brackets, apostrophes and Unicode names are supported; do not rename your comics for those characters.")
+    if not (value.startswith("\\\\") or (len(value) >= 3 and value[0].isalpha() and value[1] == ':' and value[2] in "\\/")):
+        raise ValueError("Temporary storage must be a full Windows folder path, such as D:\\ComicTemp or a UNC network folder. Use Browse to select it.")
+    return Path.GetFullPath(value)
 
 
 def _join_report_lines(lines):
@@ -379,7 +410,9 @@ def _run_archive_list(tool_path, archive_path):
     """Ask 7-Zip for a technical listing without extracting archive contents."""
     info = ProcessStartInfo()
     info.FileName = tool_path
-    info.Arguments = 'l -ba -slt "{0}"'.format(_safe_unicode(archive_path))
+    info.Arguments = 'l -ba -slt -sccUTF-8 "{0}"'.format(_safe_unicode(archive_path))
+    info.StandardOutputEncoding = Encoding.UTF8
+    info.StandardErrorEncoding = Encoding.UTF8
     info.UseShellExecute = False
     info.RedirectStandardOutput = True
     info.RedirectStandardError = True
@@ -455,6 +488,22 @@ def _classify_image_format(counts):
     return "MIXED"
 
 
+def _source_readonly_value(source):
+    """Inspect only Windows attributes; unavailable is not evidence of writable."""
+    try:
+        if not source or not File.Exists(source): return 'Unknown'
+        return 'Yes' if (File.GetAttributes(source) & FileAttributes.ReadOnly) == FileAttributes.ReadOnly else 'No'
+    except Exception:
+        return 'Unknown'
+
+
+def _set_readonly_custom_value(book, source, value=None):
+    value = value if value in ['Yes', 'No', 'Unknown'] else _source_readonly_value(source)
+    try: book.SetCustomValue('WebPReadOnly', value)
+    except Exception: pass
+    return value
+
+
 def _scan_book(book, tool_path):
     """Return one scan-result dictionary without converting comic files.
 
@@ -464,6 +513,7 @@ def _scan_book(book, tool_path):
     result = {
         "caption": _safe_unicode(getattr(book, "Caption", "")) or _safe_unicode(getattr(book, "FileNameWithExtension", "")),
         "file_path": file_path,
+        "read_only": _source_readonly_value(file_path),
         "file_name": _safe_unicode(getattr(book, "FileNameWithExtension", "")) or Path.GetFileName(file_path),
         "archive_type": Path.GetExtension(file_path).lower().lstrip("."),
         "file_size": long(getattr(book, "FileSize", 0) or 0),
@@ -956,6 +1006,9 @@ def _run_conversion_helper(python_tool, tool_path, result, options, book):
     info.Arguments += " --work-dir " + _quote_argument(options.get("work_dir", ""))
     if options.get("preview_dir", ""):
         info.Arguments += " --preview-dir " + _quote_argument(options["preview_dir"])
+    info.StandardOutputEncoding = Encoding.UTF8
+    info.StandardErrorEncoding = Encoding.UTF8
+    info.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
     info.UseShellExecute = False
     info.RedirectStandardOutput = True
     info.RedirectStandardError = True
@@ -1004,11 +1057,13 @@ def _set_scan_custom_values(book, result):
     except Exception:
         pass
 
+    result['read_only'] = _set_readonly_custom_value(book, result.get('file_path', ''), result.get('read_only'))
     _status_after_scan(book, result)
 
 
 def _set_converted_custom_values(book, final_path, helper_result):
     """Apply output labels only when a replacement is accepted by the caller."""
+    _set_readonly_custom_value(book, final_path)
     try:
         book.SetCustomValue(IMAGE_FORMAT_KEY, _safe_unicode(helper_result.get("OUTPUT_IMAGE_FORMAT", "WEBP")))
     except Exception:
@@ -1039,6 +1094,32 @@ def _delete_file_if_exists(path):
         File.Delete(path)
 
 
+def _replacement_source_problem(source_path, options):
+    """Honor the original archive's read-only protection; never change its flags."""
+    if options.get('run_mode', 'Replace Originals') != 'Replace Originals' or not File.Exists(source_path):
+        return None
+    if (File.GetAttributes(source_path) & FileAttributes.ReadOnly) != FileAttributes.ReadOnly:
+        return None
+    return {'STATUS': 'ERROR', 'ERROR_CODE': 'SOURCE_ARCHIVE_READ_ONLY',
+            'ERROR_STAGE': 'replacement preflight',
+            'ERROR_ACTION': 'If replacement is intended, clear Read-only on this original file in Windows Properties, then review interrupted work before retrying if any records or retained outputs exist. Alternatively use Create WebP Copies. Do not delete recovery records or retained files merely to force a retry.',
+            'ERROR_DETAIL': 'Original archive has Windows ReadOnly attribute: ' + source_path,
+            'MESSAGE': 'Original comic archive is read-only. Windows cannot replace it. No image corruption is indicated, and the tool has not changed its permissions. Clear Read-only in the file Properties if you intend to replace it, or choose Create WebP Copies.'}
+
+
+def _replacement_destination_conflict(source_path, options):
+    """Reject extension-changing conflicts before conversion; never reuse a CBZ blindly."""
+    if options.get("run_mode", "Replace Originals") != "Replace Originals":
+        return None
+    final = _build_final_replace_path(source_path, Path.GetExtension(source_path).lower().lstrip("."), options.get("cbr_mode", ""))
+    if Path.GetFullPath(final).lower() != Path.GetFullPath(source_path).lower() and (File.Exists(final) or Directory.Exists(final)):
+        return {"STATUS": "ERROR", "ERROR_CODE": "DESTINATION_EXISTS", "ERROR_STAGE": "replacement preflight",
+                "ERROR_ACTION": "Inspect the existing destination and source. Use the intended existing CBZ/library entry or resolve a verified duplicate before retrying; neither file will be overwritten automatically.",
+                "ERROR_DETAIL": "Source: " + source_path + " | Existing destination: " + final,
+                "MESSAGE": "Destination already exists: " + final + ". CBR-to-CBZ replacement cannot overwrite it. This is a filename conflict, not evidence of corruption. Source and existing destination were left unchanged."}
+    return None
+
+
 def _finalize_replacement(source_path, helper_result, options):
     """Install validated output while retaining recoverable files on failure.
 
@@ -1053,12 +1134,25 @@ def _finalize_replacement(source_path, helper_result, options):
         }
 
     final_output_path = _build_final_replace_path(source_path, Path.GetExtension(source_path).lower().lstrip("."), options.get("cbr_mode", ""))
+    source_problem = _replacement_source_problem(source_path, options)
+    if source_problem is not None:
+        result = dict(helper_result)
+        result.update(source_problem)
+        result['OUTPUT_PATH'] = temp_output_path
+        result['MESSAGE'] += ' The converted temporary output was retained for inspection.'
+        return result
+    conflict = _replacement_destination_conflict(source_path, options)
+    if conflict is not None:
+        conflict["OUTPUT_PATH"] = temp_output_path
+        conflict["MESSAGE"] += " A converted temporary output was retained for inspection."
+        return conflict
     create_backup = bool(options.get("create_backup", False))
     backup_path = ""
 
     rollback_path = source_path + ".webp-rollback-" + System.Guid.NewGuid().ToString("N")
     same_path = Path.GetFullPath(source_path).lower() == Path.GetFullPath(final_output_path).lower()
     journal_path = source_path + ".webp-recovery.txt"
+    replace_stage = 'checking source identity and recovery records'
     try:
         if helper_result.get("SOURCE_SIGNATURE", None) is not None:
             current_info = FileInfo(source_path)
@@ -1069,17 +1163,22 @@ def _finalize_replacement(source_path, helper_result, options):
         if not same_path and File.Exists(final_output_path):
             raise Exception("Destination already exists; refusing to overwrite: " + final_output_path)
         if create_backup:
+            replace_stage = 'creating original backup'
             backup_path = _build_backup_path(source_path)
             File.Copy(source_path, backup_path, False)
 
+        replace_stage = 'writing replacement recovery record'
         _write_text_file(journal_path, "WebP replacement recovery record\nSource: " + source_path + "\nConverted: " + temp_output_path + "\nFinal: " + final_output_path + "\nRollback: " + rollback_path + "\nBackup: " + backup_path + "\nInspect these paths before retrying; do not delete an available original.\n")
         if same_path:
             # Same-directory replacement: never fall back to delete-then-move.
+            replace_stage = 'replacing original archive'
             File.Replace(temp_output_path, source_path, None)
         else:
             # Extension changes need two renames. Keep the source recoverable.
+            replace_stage = 'moving original to rollback path'
             File.Move(source_path, rollback_path)
             try:
+                replace_stage = 'installing converted archive'
                 File.Move(temp_output_path, final_output_path)
             except Exception:
                 File.Move(rollback_path, source_path)
@@ -1103,34 +1202,54 @@ def _finalize_replacement(source_path, helper_result, options):
             helper_result["MESSAGE"] += " Temporary original could not be removed: " + rollback_path
         return helper_result
     except Exception, ex:
-        # Retain both the converted output and any recovery file on failure.
-        return {
-            "STATUS": "ERROR",
-            "MESSAGE": "Replace step failed; retained available files for recovery. Record: " + journal_path + ". " + _safe_unicode(ex),
-            "OUTPUT_PATH": temp_output_path,
-            "BACKUP_PATH": backup_path,
-            "RECOVERY_PATH": rollback_path if File.Exists(rollback_path) else "",
-        }
+        # Preserve successful encode/validation evidence when installation fails.
+        detail = _safe_unicode(ex)
+        hresult = getattr(ex, 'HResult', 0)
+        native_code = getattr(ex, 'winerror', 0) or getattr(ex, 'errno', 0) or (int(hresult) & 0xffff)
+        code = 'REPLACEMENT_FAILED'
+        explanation = 'The converted archive could not be installed.'
+        action = 'Keep the original, converted output and recovery files. Review interrupted work and the failed step before retrying.'
+        if isinstance(ex, System.UnauthorizedAccessException) or native_code == 5:
+            code = 'REPLACEMENT_ACCESS_DENIED'
+            explanation = 'Windows denied access during ' + replace_stage + '. This is an access problem, not an image-conversion or corruption verdict.'
+            action = 'Check the original archive Read-only flag, folder permissions, file locks and any specific security-software event. Preserve retained output and use Review interrupted work; do not disable protection or delete tracking records to force a retry.'
+        elif native_code in [32, 33]:
+            code = 'REPLACEMENT_FILE_LOCKED'
+            explanation = 'Another process is holding a file needed for ' + replace_stage + '.'
+            action = 'Close readers/editors using the named comic, confirm the optimizer helper has stopped, then inspect retained files through Review interrupted work.'
+        elif native_code in [39, 112]:
+            code = 'DISK_SPACE_ERROR'
+            explanation = 'Storage ran out of space during ' + replace_stage + '.'
+        result = dict(helper_result)
+        result.update({'STATUS': 'ERROR', 'ERROR_CODE': code, 'ERROR_STAGE': replace_stage,
+                       'ERROR_ACTION': action,
+                       'ERROR_DETAIL': detail + ' | HRESULT: ' + str(hresult) + ' | Native error: ' + str(native_code) + ' | Source: ' + source_path + ' | Converted: ' + temp_output_path,
+                       'MESSAGE': explanation + ' Available original/converted files were retained for inspection. ' + (('Recovery record: ' + journal_path + '. ') if File.Exists(journal_path) else 'No replacement recovery record was created. ') + detail,
+                       'OUTPUT_PATH': temp_output_path, 'BACKUP_PATH': backup_path,
+                       'RECOVERY_PATH': rollback_path if File.Exists(rollback_path) else ''})
+        return result
 
 
 # ===========================================================================
 # [P09] Reports, sampling and five-quality test orchestration
 # ===========================================================================
 def _extract_report_summary_items(report_text):
-    """Read the header before the first blank line; retain legacy field names."""
+    """Read just the header; never split every book to obtain a summary."""
     summary_items = []
-    lines = _safe_unicode(report_text).splitlines()
-    if not lines:
-        return summary_items
-    summary_items.append(("Report", lines[0].strip()))
-    for line in lines[1:]:
-        text = _safe_unicode(line).strip()
-        if not text:
-            break
-        if ": " not in text:
-            continue
-        key, value = text.split(": ", 1)
-        summary_items.append((key, value))
+    reader = System.IO.StringReader(_safe_unicode(report_text))
+    try:
+        first = reader.ReadLine()
+        if first is None: return summary_items
+        summary_items.append(("Report", first.strip()))
+        while True:
+            line = reader.ReadLine()
+            if line is None or not line.strip(): break
+            text = line.strip()
+            if ": " in text:
+                key, value = text.split(": ", 1)
+                summary_items.append((key, value))
+    finally:
+        reader.Dispose()
     return summary_items
 
 
@@ -1190,6 +1309,7 @@ def _build_analysis_report(results, tool_path):
     for result in results:
         lines.append(_safe_unicode(result.get("caption", "")))
         lines.append("  File: " + _safe_unicode(result.get("file_path", "")))
+        lines.append("  Original read-only: " + _safe_unicode(result.get('read_only', 'Unknown')))
         lines.append("  Archive Type: " + _safe_unicode(result.get("archive_type", "")).upper())
         lines.append("  ImageFormat: " + _safe_unicode(result.get("image_format", "")))
         lines.append("  Status: " + _safe_unicode(result.get("status", "")))
@@ -1256,7 +1376,20 @@ def _run_quality_trial(python_tool, tool_path, result, options, book, progress_f
     paired = all([r.get("STATUS", "") == "OK" for r in trials])
     result = dict(zip(TRIAL_QUALITY_LEVELS, trials))
     result.update({"STATUS": "OK" if paired else "ERROR", "MESSAGE": "Original unchanged. All five trial archives removed." if paired else "One or more quality trials failed; see trial details."})
+    if not paired:
+        first_failure = next((trial for trial in trials if trial.get("STATUS") != "OK" and trial.get("MESSAGE")), None)
+        if first_failure is not None:
+            result["MESSAGE"] = "Quality test failed. " + _safe_unicode(first_failure["MESSAGE"])
+
     return result
+
+
+def _failure_report_lines(result, prefix="  "):
+    """Keep actionable summary separate from raw decoder evidence in reports."""
+    fields = [("ERROR_CODE", "Failure category"), ("ERROR_PAGE", "Affected page"),
+              ("ERROR_STAGE", "Failed step"), ("ERROR_ACTION", "Suggested action"),
+              ("ERROR_DETAIL", "Technical diagnostic")]
+    return [prefix + label + ": " + _safe_unicode(result[key]) for key, label in fields if result.get(key)]
 
 
 def _build_quality_trial_report(results, measurements, tool_path, options):
@@ -1279,6 +1412,7 @@ def _build_quality_trial_report(results, measurements, tool_path, options):
             if quality in measured:
                 trial = measured[quality]
                 lines += ["  " + quality + " Savings: " + trial.get("SAVINGS_PERCENT", "Not measured") + ("%" if "SAVINGS_PERCENT" in trial else ""), "  " + quality + " Time: " + trial.get("SECONDS", "0") + " s", "  " + quality + " Status: " + trial.get("STATUS", ""), "  " + quality + " Detail: " + trial.get("MESSAGE", "")]
+                lines += _failure_report_lines(trial, "  " + quality + " ")
                 for key in sorted(trial):
                     if key.startswith("TIME_") and key.endswith("_SECONDS"):
                         lines.append("  " + quality + " " + key + ": " + _safe_unicode(trial[key]))
@@ -1368,9 +1502,12 @@ def _build_conversion_report(results, conversion_results, tool_path, options):
         conversion_result = conversion_results[index]
         lines.append(_safe_unicode(result.get("caption", "")))
         lines.append("  Source: " + _safe_unicode(result.get("file_path", "")))
+        lines.append("  Original read-only: " + _safe_unicode(result.get('read_only', 'Unknown')))
         lines.append("  Source ImageFormat: " + _safe_unicode(result.get("image_format", "")))
         lines.append("  Strategy: " + _safe_unicode(result.get("strategy", "")))
         lines.append("  Conversion Status: " + _safe_unicode(conversion_result.get("STATUS", "ERROR")))
+        if conversion_result.get("SKIP_REASON", ""):
+            lines.append("  Skip Reason: " + _safe_unicode(conversion_result["SKIP_REASON"]))
         if conversion_result.get("OUTPUT_PATH", ""):
             lines.append("  Output: " + _safe_unicode(conversion_result.get("OUTPUT_PATH", "")))
         if conversion_result.get("BACKUP_PATH", ""):
@@ -1398,6 +1535,7 @@ def _build_conversion_report(results, conversion_results, tool_path, options):
                 lines.append("  " + key + ": " + _safe_unicode(conversion_result[key]))
         if conversion_result.get("CHECKPOINT_WARNING"):
             lines.append("  Checkpoint warning: " + _safe_unicode(conversion_result["CHECKPOINT_WARNING"]))
+        lines += _failure_report_lines(conversion_result)
         message = _safe_unicode(conversion_result.get("MESSAGE", "")) or _safe_unicode(conversion_result.get("stderr", ""))
         if message:
             lines.append("  Notes: " + message)
@@ -1486,7 +1624,7 @@ def _save_run_record(report_path, text, options=None, results=None, preview_stat
             root.RemoveChild(old)
         parent = document.CreateElement("Options")
         root.AppendChild(parent)
-        for key in ["quality_mode", "encoder_backend", "resize_mode", "cbr_mode", "size_policy", "work_dir", "reports_beside_sources", "page_workers"]:
+        for key in ["quality_mode", "encoder_backend", "resize_mode", "cbr_mode", "size_policy", "work_dir", "reports_beside_sources", "page_workers", "run_mode", "create_backup", "resource_profile", "prefetch", "resume_completed", "keep_test_previews", "dark_mode", "keep_awake"]:
             if key in options:
                 node = document.CreateElement("Setting")
                 node.SetAttribute("key", key)
@@ -1656,6 +1794,7 @@ def _ui_label(parent, text, x, y, width, height=24, heading=False):
     """Build a consistently styled WinForms label and attach it to its parent."""
     label = Label()
     label.Text = text
+    label.BackColor = Color.White
     label.Location = Point(x, y)
     label.Size = Size(width, height)
     label.Font = Font("Segoe UI", 12.0 if heading else 9.0, FontStyle.Bold if heading else FontStyle.Regular)
@@ -1668,6 +1807,7 @@ def _ui_combo(parent, title, values, y):
     """Build an anchored, selection-only options dropdown."""
     _ui_label(parent, title, 24, y + 4, 172)
     combo = _new_combo()
+    combo.AccessibleName = title
     combo.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
     combo.Items.AddRange(System.Array[System.Object](values))
     combo.SelectedIndex = 0
@@ -1693,7 +1833,7 @@ class OptionsForm(Form):
         self.MinimumSize = Size(776, 709)
         self.StartPosition = FormStartPosition.CenterParent
         self.BackColor = Color.White
-        _ui_label(self, "Make room for more comics.", 24, 18, 700, 34, True)
+        _ui_label(self, "Make room for more comics.", 24, 18, 560, 34, True)
         _ui_label(self, "Choose your workflow, then tune quality and storage. Only selected books are processed.", 24, 56, 700, 30)
         self._tabs = _new_tabs()
         self._tabs.Location = Point(16, 96)
@@ -1730,11 +1870,12 @@ class OptionsForm(Form):
         self._cbr_combo = _ui_combo(advanced, "CBR output", CBR_MODE_VALUES, 78)
         _ui_label(advanced, "Temporary storage", 24, 138, 650, 28, True)
         self._work_text = TextBox()
+        self._work_text.AccessibleName = "Temporary work folder"
         self._work_text.Location = Point(24, 178)
         self._work_text.Size = Size(558, 26)
         self._work_text.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
         advanced.Controls.Add(self._work_text)
-        browse = Button()
+        browse = _new_button()
         browse.Text = "Browse..."
         browse.Location = Point(594, 176)
         browse.Size = Size(100, 30)
@@ -1752,7 +1893,7 @@ class OptionsForm(Form):
         self._workers_combo = _ui_combo(performance, "Concurrent pages", ["1", "2", "4", "6", "8", "10", "12"], 24)
         self._profile_combo = _ui_combo(performance, "PC priority", ["Normal", "Background"], 68)
         _ui_label(performance, "More workers use more RAM. Background lowers CPU priority; it does not limit disk/network traffic. Books still finish one at a time.", 24, 110, 660, 42)
-        benchmark = Button()
+        benchmark = _new_button()
         benchmark.Text = "Benchmark worker counts"
         benchmark.Location, benchmark.Size = Point(24, 160), Size(220, 34)
         benchmark.Click += self._show_performance
@@ -1774,46 +1915,46 @@ class OptionsForm(Form):
         performance.Controls.Add(self._awake_checkbox)
         _ui_label(tools_page, "Check your setup", 24, 24, 660, 30, True)
         _ui_label(tools_page, "Check the selected workflow's tools and temporary storage using disposable files. Choose a conversion action to check Python, Pillow and the encoder.", 24, 70, 660, 66)
-        check_setup = Button()
+        check_setup = _new_button()
         check_setup.Text = "Check setup"
         check_setup.Location, check_setup.Size = Point(24, 144), Size(180, 34)
         check_setup.Click += self._show_setup
         tools_page.Controls.Add(check_setup)
         _ui_label(tools_page, "Interrupted work", 24, 230, 660, 30, True)
         _ui_label(tools_page, "Review pending attempts, check source/output readability and open their folders. Allow retry only after the files are resolved and the prior helper has stopped.", 24, 274, 660, 74)
-        recovery = Button()
+        recovery = _new_button()
         recovery.Text = "Review interrupted work"
         recovery.Location, recovery.Size = Point(24, 364), Size(230, 34)
         recovery.Click += self._show_recovery
         tools_page.Controls.Add(recovery)
         self._dark_checkbox = _new_checkbox()
         self._dark_checkbox.Text = "Dark mode"
-        self._dark_checkbox.Location, self._dark_checkbox.Size = Point(24, 444), Size(660, 30)
+        self._dark_checkbox.Location, self._dark_checkbox.Size = Point(620, 18), Size(120, 28)
         self._dark_checkbox.CheckedChanged += self._theme_changed
-        tools_page.Controls.Add(self._dark_checkbox)
+        self.Controls.Add(self._dark_checkbox)
+        self._dark_checkbox.Anchor = AnchorStyles.Top | AnchorStyles.Right
+        self._dark_checkbox.BringToFront()
         self._settings_note = _ui_label(advanced, "", 24, 430, 660, 44)
-        reset = Button()
+        reset = _new_button()
         reset.Text = "Restore defaults"
         reset.Location = Point(24, 622)
         reset.Size = Size(140, 32)
         reset.Anchor = AnchorStyles.Bottom | AnchorStyles.Left
         reset.Click += self._reset_settings
         self.Controls.Add(reset)
-        history = Button()
+        history = _new_button()
         history.Text = "Run history"
         history.Location = Point(176, 622)
         history.Size = Size(130, 32)
         history.Anchor = AnchorStyles.Bottom | AnchorStyles.Left
         history.Click += self._show_history
         self.Controls.Add(history)
-        self._ok_button = Button()
-        self._ok_button.Location = Point(510, 622)
-        self._ok_button.Size = Size(110, 32)
+        self._ok_button = _new_button()
+        self._ok_button.Location = Point(480, 620)
+        self._ok_button.Size = Size(140, 36)
         self._ok_button.Anchor = AnchorStyles.Bottom | AnchorStyles.Right
         self._ok_button.Click += self._save
-        self._ok_button.BackColor = Color.FromArgb(26, 71, 74)
-        self._ok_button.ForeColor = Color.White
-        self._cancel_button = Button()
+        self._cancel_button = _new_button()
         self._cancel_button.Text = "Cancel"
         self._cancel_button.Location = Point(632, 622)
         self._cancel_button.Size = Size(110, 32)
@@ -1842,13 +1983,14 @@ class OptionsForm(Form):
             if values.get(key, "") in list(control.Items):
                 control.SelectedItem = values[key]
         self._prefetch_checkbox.Checked = values.get("prefetch", "False").lower() == "true"
-        self._dark_checkbox.Checked = values.get("dark_mode", "False").lower() == "true"
+        self._dark_checkbox.Checked = values.get("dark_mode", "True").lower() == "true"
         self._awake_checkbox.Checked = values.get("keep_awake", "False").lower() == "true"
         self._resume_checkbox.Checked = values.get("resume_completed", "True").lower() == "true"
         self._backup_checkbox.Checked = values.get("create_backup", "True").lower() == "true"
         self._preview_checkbox.Checked = values.get("keep_test_previews", "False").lower() == "true"
         self._reports_checkbox.Checked = values.get("reports_beside_sources", "False").lower() == "true"
         self._work_text.Text = values.get("work_dir", "")
+        self._settings_note.Visible = bool(warning or migrated_encoder)
         self._settings_note.Text = warning or ("Previous encoder choice updated to explicit ImageMagick. No automatic fallback. Settings save when you start a run." if migrated_encoder else "Settings are remembered when you start a run. Selected encoders never fall back automatically.")
 
     def _theme_changed(self, sender, event):
@@ -1905,7 +2047,7 @@ class OptionsForm(Form):
         self._backup_checkbox.Visible = not trial
         self._preview_checkbox.Visible = trial
         self._backup_checkbox.Enabled = mode == "Replace Originals"
-        self._ok_button.Text = "Analyze" if analyze else "Start run"
+        self._ok_button.Text = {"Analyze Only": "Analyze", "Create WebP Copies": "Create copies", "Replace Originals": "Replace originals", "Test savings & quality": "Compare quality"}.get(mode, "Start run")
         notes = {"Analyze Only": "Inspect selected archives and update ImageFormat for smart lists. No comic files are converted.", "Create WebP Copies": "Keep the original and create a separate WebP archive. The existing library entry continues to point to the original; no disk space is reclaimed.", "Replace Originals": "Validate the new archive before replacing the source. Uncheck backup to avoid a permanent duplicate. Temporary working space is still required.", "Test savings & quality": "Compare Q60, Q70, Q75, Q80 and Q90 on up to 3 eligible books spaced through your selection, with no resize. Five full conversions per sampled book take extra time. Trial archives are deleted; originals stay unchanged."}
         self._action_note.Text = notes.get(mode, "")
         quality = _safe_unicode(self._quality_combo.SelectedItem)
@@ -1924,6 +2066,19 @@ class OptionsForm(Form):
             estimate = "Sample estimate unavailable for this encoder/resize combination."
         self._quality_note.Text = ("This test compares Q60, Q70, Q75, Q80 and Q90 at original dimensions. The report shows actual results for this small sample, not a prediction for your whole collection." if trial else estimate + "\nBased on bundled JPEG page samples, ImageMagick, no resize. Actual book savings vary. Q is an encoder level, not a percentage.")
 
+        self._quality_estimate_detail = self._quality_note.Text
+        if hasattr(self, '_quality_about'):
+            self._quality_note.Text = ("Five quality levels. Original dimensions.\nYour comics stay unchanged." if trial else (estimate.split(" combined")[0] + "\nActual book savings vary."))
+            if analyze:
+                self._quality_note.Text = "Choose a conversion action to adjust quality."
+            self._quality_about.Enabled = not analyze
+
+    def _about_quality(self, sender, event):
+        dialog = ResultDetailsForm("Quality estimates\r\n\r\n" + self._quality_estimate_detail + "\r\n\r\nQ is an encoder setting, not a percentage of quality retained. Use Test savings & quality to compare your own books before replacement.")
+        dialog.Text = "WebP Optimizer - About quality estimates"
+        try: _show_owned_dialog(dialog, self)
+        finally: dialog.Dispose()
+
     def _mode_changed(self, sender, event):
         self._apply_mode_state()
 
@@ -1937,7 +2092,7 @@ class OptionsForm(Form):
             "cbr_mode": _safe_unicode(self._cbr_combo.SelectedItem),
             "create_backup": self._backup_checkbox.Enabled and bool(self._backup_checkbox.Checked),
             "size_policy": _safe_unicode(self._size_policy_combo.SelectedItem),
-            "work_dir": _safe_unicode(self._work_text.Text).strip(),
+            "work_dir": _clean_work_directory_input(self._work_text.Text),
             "reports_beside_sources": bool(self._reports_checkbox.Checked),
             "keep_test_previews": bool(self._preview_checkbox.Checked),
             "page_workers": _safe_unicode(self._workers_combo.SelectedItem),
@@ -1967,6 +2122,11 @@ class OptionsForm(Form):
 
     def _save(self, sender, event):
         self.options = self._collect_options()
+        try:
+            self.options["work_dir"] = _normalize_work_directory(self.options.get("work_dir", ""))
+        except Exception, ex:
+            MessageBox.Show(_safe_unicode(ex), "Check temporary storage", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            return
         self.options["_show_preflight"] = True
         remembered = dict(_load_settings()[0])
         remembered.update(dict((key, value) for key, value in self.options.items() if not key.startswith("_")))
@@ -1979,7 +2139,7 @@ class OptionsForm(Form):
         self.Close()
 
     def _cancel(self, sender, event):
-        _set_ui_theme(_load_settings()[0].get("dark_mode", "False").lower() == "true", self)
+        _set_ui_theme(_load_settings()[0].get("dark_mode", "True").lower() == "true", self)
         self.DialogResult = DialogResult.Cancel
         self.Close()
 
@@ -2025,7 +2185,7 @@ class ProgressForm(Form):
         self._time_label = _ui_label(self, "Elapsed 00:00", 24, 224, 650, 26)
         self._rate_label = _ui_label(self, "Speed and rough ETA appear after the first converted book.", 24, 256, 650, 42)
         self._stop_note = _ui_label(self, "Stopping finishes the active book, including validation and replacement. Remaining books stay untouched.", 24, 304, 650, 42)
-        self._stop_button = Button()
+        self._stop_button = _new_button()
         self._stop_button.Text = "Stop after current book"
         self._stop_button.Location = Point(450, 366)
         self._stop_button.Size = Size(224, 32)
@@ -2266,6 +2426,7 @@ class QualityPreviewForm(Form):
         self.Controls.Add(toolbar)
         _ui_label(toolbar, "Compare against the original", 20, 12, 650, 28, True)
         self._page = _new_combo()
+        self._page.AccessibleName = "Preview page"
         self._page.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
         self._page.Location = Point(20, 56)
         self._page.Size = Size(600, 30)
@@ -2274,18 +2435,20 @@ class QualityPreviewForm(Form):
             self._page.Items.Add(entry["title"])
         toolbar.Controls.Add(self._page)
         self._quality = _new_combo()
+        self._quality.AccessibleName = "Preview quality"
         self._quality.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
         self._quality.Location = Point(636, 56)
         self._quality.Size = Size(104, 30)
         toolbar.Controls.Add(self._quality)
         self._zoom = _new_combo()
+        self._zoom.AccessibleName = "Preview zoom"
         self._zoom.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
         self._zoom.Location = Point(756, 56)
         self._zoom.Size = Size(190, 30)
         self._zoom.Items.AddRange(System.Array[System.Object](["Fit whole page", "25%", "50%", "75%", "100% - actual pixels", "125%", "150%", "200% - enlarged pixels", "300%", "400%"]))
         self._zoom.SelectedIndex = 0
         toolbar.Controls.Add(self._zoom)
-        full = Button()
+        full = _new_button()
         full.Text = "Full screen (F11)"
         full.Location = Point(1000, 56)
         full.Size = Size(180, 30)
@@ -2297,13 +2460,13 @@ class QualityPreviewForm(Form):
         footer.Height = 166
         self.Controls.Add(footer)
         _ui_label(footer, "Wheel: scroll both | Ctrl+wheel: zoom | Shift+wheel: horizontal | 100%: actual pixels | F11: full screen | Esc: return", 20, 10, 1280)
-        self._analyze = Button()
+        self._analyze = _new_button()
         self._analyze.Text = "Analyze differences"
         self._analyze.Location = Point(20, 40)
         self._analyze.Size = Size(180, 30)
         self._analyze.Click += self._analyze_difference
         footer.Controls.Add(self._analyze)
-        self._show_difference = CheckBox()
+        self._show_difference = _new_checkbox()
         self._show_difference.Text = "Show amplified difference (8x)"
         self._show_difference.Location = Point(220, 42)
         self._show_difference.Size = Size(310, 28)
@@ -2620,12 +2783,12 @@ class RunHistoryForm(Form):
         self._detail = _ui_label(self, "", 24, 544, 1130, 66)
         self._detail.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
         self._buttons = {}
-        actions = [("Open results", self._open_results), ("Open previews", self._open_previews), ("Delete previews", self._delete_previews), ("Prepare new test", self._prepare_test), ("Refresh", self._refresh_clicked), ("Close", self._close_history)]
+        actions = [("Open results", self._open_results), ("Open previews", self._open_previews), ("Delete previews", self._delete_previews), ("Prepare new test", self._prepare_test), ("Report folder", self._open_report_folder), ("Refresh", self._refresh_clicked), ("Close", self._close_history)]
         for index, (title, handler) in enumerate(actions):
-            button = Button()
+            button = _new_button()
             button.Text = title
-            button.Location = Point(24 + index * 188, 628)
-            button.Size = Size(176, 32)
+            button.Location = Point(24 + index * 162, 628)
+            button.Size = Size(152, 32)
             button.Anchor = AnchorStyles.Bottom | AnchorStyles.Left
             button.Click += handler
             self.Controls.Add(button)
@@ -2693,7 +2856,7 @@ class RunHistoryForm(Form):
         if not record:
             self._detail.Text = "Select a run to view its results and preview status."
         if record:
-            self._detail.Text = record["path"] + "\nPreview status: " + record.get("previewState", "-") + ". Preparing a test uses the current ComicRack selection; sources and settings must be reviewed."
+            self._detail.Text = record.get("mode", "Run") + "  |  " + record.get("books", "-") + " books  |  " + record.get("savings", "Not recorded") + "\nPreviews: " + record.get("previewState", "-") + ". Prepare new test uses your current ComicRack selection."
             if not self._allow_retest:
                 self._detail.Text += " To prepare a test, open history from Optimize Archives."
 
@@ -2748,6 +2911,13 @@ class RunHistoryForm(Form):
             self.DialogResult = DialogResult.OK
             self.Close()
 
+    def _open_report_folder(self, sender, event):
+        record = self._selected()
+        try:
+            Process.Start(Path.GetDirectoryName(record['path']) if record else REPORT_DIR)
+        except Exception, ex:
+            MessageBox.Show('Could not open report folder: ' + _safe_unicode(ex), 'WebP Optimizer')
+
     def _refresh_clicked(self, sender, event):
         self._refresh_safe()
 
@@ -2758,12 +2928,165 @@ class RunHistoryForm(Form):
 # ===========================================================================
 # [P17] Results UI and preview lifecycle
 # ===========================================================================
+def _result_status_group(value):
+    """Semantic order/color; preserve status text so color is never required."""
+    value = _safe_unicode(value).upper()
+    if any(word in value for word in ["ERROR", "FAILED", "MISSING", "NEEDS ATTENTION", "UNREADABLE"]):
+        return 0
+    if "SKIP" in value or value in ["UNSUPPORTED", "NO IMAGE PAGES"]:
+        return 1
+    if value in ["OK", "COMPLETED", "ELIGIBLE", "ALREADY WEBP", "WEBP"]:
+        return 3
+    return 2
+
+
+def _result_record_status(record):
+    return record.get("Conversion Status", record.get("Status", ""))
+
+
+def _result_category(record):
+    """Filters use original report outcomes, never color or translated labels."""
+    status = _result_record_status(record).upper()
+    if _result_status_group(status) == 0 or record.get("Skip Reason", "").upper() in ["ARCHIVE_ERROR", "MISSING"] or record.get("Source ImageFormat", "").upper() in ["ERROR", "MISSING"]:
+        return "Errors"
+    if status in ["NOT_PROCESSED", "NOT PROCESSED"]:
+        return "Not processed"
+    if "SKIP" in status or status in ["ALREADY WEBP", "WEBP", "PNG-ONLY", "PNG-HEAVY MIXED", "UNSUPPORTED", "NO IMAGE PAGES"]:
+        return "Skipped"
+    if status in ["OK", "COMPLETED"]:
+        return "Converted"
+    return "Other"
+
+
+def _result_display_status(record):
+    status = _result_record_status(record)
+    if status.upper() in ["NOT_PROCESSED", "NOT PROCESSED"]:
+        return "Not processed"
+    if status.upper() == "SKIPPED" and _result_category(record) == "Errors":
+        return "Source needs attention"
+    if status.upper() == "SKIPPED":
+        reason = record.get("Skip Reason", "").upper()
+        note = record.get("Notes", "").lower()
+        if reason == "SIZE_POLICY" or "not smaller" in note or "size policy" in note:
+            return "Not smaller" if record.get("_size_policy", "Only If Smaller") == "Only If Smaller" else "Size target not met"
+        if "webp" in note and ("already" in note or "only webp" in note):
+            return "Already WebP"
+        if reason in ["CBR_OPTION", "PNG_ONLY", "PNG_HEAVY"]:
+            return "Skipped by settings"
+        if reason in ["WEBP", "ALREADY_WEBP"]:
+            return "Already WebP"
+        if reason == "RESUMED":
+            return "Previously completed"
+    return status
+
+
+def _result_settings_text(options):
+    """A compact, explicit review before repeating a run; never assume backups."""
+    fields = [("Action", "run_mode"), ("Quality", "quality_mode"), ("Encoder", "encoder_backend"),
+              ("Page dimensions", "resize_mode"), ("CBR handling", "cbr_mode"),
+              ("Size policy", "size_policy"), ("Page workers", "page_workers"),
+              ("PC priority", "resource_profile")]
+    lines = [label + ": " + _safe_unicode(options.get(key, "Not recorded")) for label, key in fields]
+    lines.append("Temporary folder: " + (_safe_unicode(options.get("work_dir", "")) or "Beside each source"))
+    for label, key in [("Keep original backup", "create_backup"), ("Prefetch", "prefetch"), ("Resume completed books", "resume_completed")]:
+        lines.append(label + ": " + ("Not recorded" if key not in options else ("Yes" if _safe_unicode(options[key]).lower() == "true" else "No")))
+    return "\r\n".join(lines)
+
+
+class ResultRowComparer(System.Collections.IComparer):
+    """Stable text/status/numeric sorts; missing percentages stay last both ways."""
+    def __init__(self, column, ascending):
+        self.column, self.ascending = column, ascending
+    def Compare(self, left, right):
+        if self.column < 0:
+            return left.Tag["index"] - right.Tag["index"]
+        a, b = left.SubItems[self.column].Text, right.SubItems[self.column].Text
+        if self.column >= 2 and self.column < left.SubItems.Count - 1:
+            def number(value):
+                try:
+                    return float(_safe_unicode(value).rstrip('%').strip())
+                except Exception:
+                    return None
+            a, b = number(a), number(b)
+            if a is None or b is None:
+                return (1 if a is None else -1) if a != b else left.Tag['index'] - right.Tag['index']
+        elif self.column == 1:
+            a, b = (_result_status_group(a), a.lower()), (_result_status_group(b), b.lower())
+        else:
+            a, b = a.lower(), b.lower()
+        compared = (a > b) - (a < b)
+        return (compared if self.ascending else -compared) if compared else left.Tag['index'] - right.Tag['index']
+
+
+class ResultDetailsForm(Form):
+    """Inspect/copy/save one complete book block without starting any work."""
+    def __init__(self, text, editable=False, setup_options=None):
+        self.Text = "WebP Optimizer - Selected book details"
+        self.ClientSize, self.MinimumSize = Size(960, 620), Size(700, 450)
+        self.Font = Font("Segoe UI", 9.0)
+        self.StartPosition = FormStartPosition.CenterParent
+        self._text = text
+        self._setup_options = setup_options
+        self._setup_busy = False
+        self.FormClosing += self._check_setup_closing
+        toolbar = Panel(); toolbar.Dock, toolbar.Height = DockStyle.Bottom, 48
+        self.Controls.Add(toolbar)
+        for title, x, handler in [("Copy details", 12, self._copy), ("Save details...", 150, self._save), ("Close", 288, self._close)]:
+            button = _new_button(); button.Text, button.Location, button.Size = title, Point(x, 8), Size(126, 32)
+            button.Click += handler; toolbar.Controls.Add(button)
+        if setup_options is not None:
+            self._setup_button = _new_button()
+            self._setup_button.Text, self._setup_button.Location, self._setup_button.Size = "Run setup checks", Point(426, 8), Size(150, 32)
+            self._setup_button.Click += self._collect_setup
+            toolbar.Controls.Add(self._setup_button)
+        self._reader = RichTextBox(); self._reader.Dock = DockStyle.Fill
+        self._reader.ReadOnly, self._reader.WordWrap = not editable, True
+        self._reader.Font = Font("Consolas", 10.0); self._reader.Text = text
+        self.Controls.Add(self._reader); self._reader.BringToFront()
+    def _check_setup_closing(self, sender, event):
+        if self._setup_busy: event.Cancel = True
+
+    def _collect_setup(self, sender, event):
+        self._setup_busy = True
+        self._setup_button.Enabled = False
+        try:
+            result = _setup_checks(dict(self._setup_options))
+            self._reader.AppendText("\r\n\r\nSetup check results (disposable files only):\r\n" + "\r\n".join(key + ": " + _safe_unicode(result[key]) for key in sorted(result)))
+        except Exception, ex:
+            self._reader.AppendText("\r\nSetup checks failed: " + _safe_unicode(ex))
+        finally:
+            self._setup_button.Enabled = True
+            self._setup_busy = False
+
+    def _copy(self, sender, event):
+        try:
+            Clipboard.SetText(self._reader.Text)
+        except Exception, ex:
+            MessageBox.Show("Could not copy details: " + _safe_unicode(ex), "WebP Optimizer")
+    def _save(self, sender, event):
+        dialog = System.Windows.Forms.SaveFileDialog()
+        try:
+            dialog.Filter, dialog.FileName = "Text report (*.txt)|*.txt", "webp-book-details.txt"
+            if dialog.ShowDialog(self) == DialogResult.OK:
+                _write_text_file(dialog.FileName, self._reader.Text)
+        except Exception, ex:
+            MessageBox.Show("Could not save details: " + _safe_unicode(ex), "WebP Optimizer")
+        finally:
+            dialog.Dispose()
+    def _close(self, sender, event):
+        self.Close()
+
+
 class ReportForm(Form):
     """Render results and own preview cleanup when this results window closes.
 
     Historical windows preserve previews by default; closing only the native
     comparison must not delete images needed by this results window."""
-    def __init__(self, report_text, report_path, historical=False):
+    def __init__(self, report_text, report_path, historical=False, retry_books=None, run_options=None):
+        self.retry_request = None
+        self._retry_books = retry_books
+        self._run_options = dict(run_options or {})
+        self._result_preferences_restoring = True
         self._historical = historical
         self._report_text = report_text
         self._report_path = report_path
@@ -2776,7 +3099,7 @@ class ReportForm(Form):
         self.Font = Font("Segoe UI", 9.0)
         self.AutoScaleMode = AutoScaleMode.Font
         self.ClientSize = Size(1060, 710)
-        self.MinimumSize = Size(900, 600)
+        self.MinimumSize = Size(1076, 650)
         self.StartPosition = FormStartPosition.CenterParent
         self.BackColor = Color.White
         summary = dict(self._summary_items)
@@ -2787,7 +3110,7 @@ class ReportForm(Form):
         title = "Quality comparison complete" if trial_mode else ("Analysis complete" if analyzed else "Conversion complete")
         if summary.get("Run Status", "") == "Stopped by user":
             title = "Run stopped - completed work is saved"
-        if failed != "0":
+        if failed != "0" or summary.get("Missing Files", "0") != "0":
             title = "Run finished - review failures"
         elif "Report storage warnings" in self._report_text:
             title = "Run complete - report storage needs attention"
@@ -2797,7 +3120,7 @@ class ReportForm(Form):
         elif analyzed:
             headline = "Scanned " + summary.get("Books Scanned", "0") + " books"
         else:
-            headline = summary.get("Total Saved", "0 MB") + " saved  |  " + summary.get("Overall Reduction", "0.00%" if converted == "0" else "Not recorded") + " reduction"
+            headline = (summary["Total Saved"] + " saved  |  " + summary.get("Overall Reduction", "Not recorded") + " reduction") if "Total Saved" in summary else ("No new conversions" if converted == "0" else "Savings not recorded")
         self._headline = _ui_label(self, headline, 24, 64, 1000, 42, True)
         self._headline.Font = Font("Segoe UI", 15.0 if trial_mode else 22.0, FontStyle.Bold)
         counts = converted + " converted     " + summary.get("Skipped", "0") + " skipped     " + failed + " failed     " + summary.get("Not Processed", "0") + " not processed"
@@ -2805,16 +3128,20 @@ class ReportForm(Form):
             counts = summary.get("Compared Books", "0") + " books compared     " + summary.get("Skipped", "0") + " not sampled/ineligible     " + failed + " failed     " + summary.get("Not Processed", "0") + " not processed"
         elif analyzed:
             counts = summary.get("JPEG-only Candidates", "0") + " JPEG-only candidates     " + summary.get("Already WebP", "0") + " already WebP     " + failed + " errors     " + summary.get("Missing Files", "0") + " missing     " + summary.get("Not Processed", "0") + " not processed"
-        _ui_label(self, counts, 24, 116, 1000, 28)
+        self._counts_label = _ui_label(self, counts, 24, 116, 1000, 28)
+        self._counts_label.Font = Font("Segoe UI", 10.0, FontStyle.Bold)
         sizes = "Before " + summary.get("Total Source Size", "-") + "    >    After " + summary.get("Total Output Size", "-")
         if trial_mode:
             sizes = "   |   ".join([q + ": " + summary.get(q + " Time", "-") for q in TRIAL_QUALITY_LEVELS])
-        _ui_label(self, sizes if not analyzed else "Use ImageFormat smart lists to find conversion candidates.", 24, 150, 1000, 26)
+        sizes += "    |    Elapsed " + summary.get("Elapsed Time", "not recorded")
+        _ui_label(self, sizes if not analyzed else "Elapsed " + summary.get("Elapsed Time", "not recorded") + " | Use ImageFormat smart lists to find candidates.", 24, 150, 1000, 26)
         note = "Reduction covers successful conversions only, weighted by original archive size."
         if summary.get("Run Mode", "") != "Replace Originals" or summary.get("Create Backup", "No") == "Yes":
             note += " Copies, benchmarks and retained backups do not reclaim these bytes from disk."
         if trial_mode:
             note = "Actual reductions for paired successful sample books, not a collection prediction. Originals unchanged. Optional previews are retained; inspect any failures for cleanup warnings."
+        if not analyzed and not trial_mode:
+            note = "Skips: " + summary.get("Skipped By Size Policy", "0") + " below savings target; " + summary.get("Resumed Completed Books", "0") + " previously completed. " + note
         if trial_mode and summary.get("Preview Folder", ""):
             note = "Measured sample only. Originals unchanged. The cleanup option below applies to this run, not the text report."
         if "Report storage warnings" in self._report_text:
@@ -2833,8 +3160,12 @@ class ReportForm(Form):
         listing.Dock = DockStyle.Fill
         listing.View = View.Details
         listing.FullRowSelect = True
+        listing.MultiSelect = True
+        listing.HideSelection = False
         listing.GridLines = False
-        columns = ([("Book", 280), ("Result", 80)] + [(q + " reduction", 112) for q in TRIAL_QUALITY_LEVELS] + [("Details", 320)]) if trial_mode else [("Book", 410), ("Result", 100), ("Reduction", 90), ("Details", 360)]
+        self._results_list = listing
+        self._sort_column, self._sort_ascending = -1, True
+        columns = ([("Book", 280), ("Result", 80)] + [(q + " reduction", 112) for q in TRIAL_QUALITY_LEVELS] + [("Details", 320)]) if trial_mode else [("Book", 370), ("Result", 155), ("Reduction", 90), ("Details", 360)]
         for title, width in columns:
             listing.Columns.Add(title, width)
         current = None
@@ -2849,32 +3180,104 @@ class ReportForm(Form):
             if not in_books or not line.strip() or line.startswith("---"):
                 continue
             if not line.startswith(" "):
-                current = {"book": line}
+                current = {"book": line, "raw_lines": [line]}
                 records.append(current)
-            elif current is not None and ": " in line:
-                key, separator, value = line.strip().partition(":")
-                current[key] = value.strip()
-        for record in records:
-            item = ListViewItem(record.get("book", ""))
-            item.SubItems.Add(record.get("Conversion Status", record.get("Status", "")))
-            if trial_mode:
-                for key in [q + " Savings" for q in TRIAL_QUALITY_LEVELS]:
-                    item.SubItems.Add(record.get(key, "-"))
-            else:
-                item.SubItems.Add(record.get("Savings", "-"))
-            item.SubItems.Add(record.get("Notes", ""))
-            listing.Items.Add(item)
+            elif current is not None:
+                current["raw_lines"].append(line)
+                if ": " in line:
+                    key, separator, value = line.strip().partition(":")
+                    current[key] = value.strip()
+        self._records = records
+        self._visible_records = list(records)
+        self._page_index, self._page_size = 0, 250
+        for index, record in enumerate(records):
+            record['_index'] = index
+            record['_category'] = _result_category(record)
+            record['_size_policy'] = summary.get('Size Policy', 'Only If Smaller')
+            record['_search'] = (record.get('book', '') + " " + record.get('Source', record.get('File', '')) + " " + record.get('Notes', '')).lower()
+        self._trial_results = trial_mode
+        if not analyzed and not trial_mode:
+            result_counts = dict((category, sum(1 for record in records if record['_category'] == category)) for category in ['Converted', 'Skipped', 'Errors'])
+            untouched = sum(1 for record in records if _result_record_status(record).upper() in ['NOT_PROCESSED', 'NOT PROCESSED'])
+            self._counts_label.Text = '{0} converted     {1} skipped     {2} failed     {3} not processed'.format(result_counts['Converted'], result_counts['Skipped'], result_counts['Errors'], untouched)
         books.Controls.Add(listing)
+        self._result_column_titles = [title for title, width in columns]
+        listing.ColumnClick += self._result_column_clicked
+        listing.DoubleClick += self._view_result
+        listing.SelectedIndexChanged += self._result_selection_changed
+        toolbar = Panel(); toolbar.Dock, toolbar.Height = DockStyle.Top, 82
+        self._entry_buttons = []
+        for title, x, handler in [("View entry", 8, self._view_result), ("Copy entry", 146, self._copy_result)]:
+            button = _new_button(); button.Text, button.Location, button.Size = title, Point(x, 5), Size(126, 30)
+            button.Click += handler; toolbar.Controls.Add(button)
+            if title != "Errors first":
+                self._entry_buttons.append(button)
+        self._errors_first_checkbox = _new_checkbox()
+        self._errors_first_checkbox.Text = "Errors first"
+        self._errors_first_checkbox.Location, self._errors_first_checkbox.Size = Point(284, 7), Size(134, 26)
+        self._errors_first_checkbox.CheckedChanged += self._errors_first_changed
+        toolbar.Controls.Add(self._errors_first_checkbox)
+        self._result_colors = _new_checkbox()
+        self._result_colors.Text = "Status colors"
+        self._result_colors.Location, self._result_colors.Size = Point(430, 7), Size(160, 26)
+        self._result_colors.CheckedChanged += self._result_colors_changed
+        toolbar.Controls.Add(self._result_colors)
+        self._retry_button = _new_button()
+        self._retry_button.Text, self._retry_button.Location, self._retry_button.Size = "Retry selected", Point(600, 5), Size(126, 30)
+        self._retry_button.Click += self._retry_selected
+        toolbar.Controls.Add(self._retry_button)
+        for title, x, handler in [("Run settings", 736, self._view_settings), ("Support info", 872, self._support_info)]:
+            button = _new_button(); button.Text, button.Location, button.Size = title, Point(x, 5), Size(126, 30)
+            button.Click += handler; toolbar.Controls.Add(button)
+        self._filter_combo = _new_combo()
+        self._filter_combo.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
+        self._filter_combo.Location, self._filter_combo.Size = Point(8, 46), Size(190, 26)
+        for category in ["All", "Errors", "Skipped", "Converted", "Not processed", "Other"]:
+            count = len(records) if category == "All" else sum(1 for r in records if r['_category'] == category)
+            self._filter_combo.Items.Add(category + " (" + str(count) + ")")
+        self._filter_combo.SelectedIndex = 0
+        self._filter_combo.SelectedIndexChanged += self._filter_changed
+        toolbar.Controls.Add(self._filter_combo)
+        self._result_search = TextBox()
+        self._result_search.AccessibleName = "Search results (Ctrl+F)"
+        _ui_label(toolbar, "Search", 210, 48, 50, 24)
+        search_frame = Panel()
+        search_frame.Location, search_frame.Size = Point(264, 46), Size(176, 26)
+        search_frame.Paint += self._paint_search_border
+        self._result_search.BorderStyle = System.Windows.Forms.BorderStyle.None
+        self._result_search.Location, self._result_search.Size = Point(4, 4), Size(168, 20)
+        search_frame.Controls.Add(self._result_search)
+        toolbar.Controls.Add(search_frame)
+        self._search_timer = System.Windows.Forms.Timer()
+        self._search_timer.Interval = 350
+        self._search_timer.Tick += self._search_results
+        self._result_search.TextChanged += self._search_changed
+        self.Disposed += self._dispose_result_timer
+        for title, x, handler in [("Previous", 450, self._previous_page), ("Next", 550, self._next_page)]:
+            button = _new_button(); button.Text, button.Location, button.Size = title, Point(x, 44), Size(90, 28)
+            button.Click += handler; toolbar.Controls.Add(button)
+            if title == "Previous": self._previous_button = button
+            else: self._next_button = button
+        self._page_label = _ui_label(toolbar, "", 650, 48, 355, 24)
+        self._results_tip = System.Windows.Forms.ToolTip()
+        self._results_tip.SetToolTip(self._result_search, "Search book title, source path or notes")
+        self._results_tip.SetToolTip(self._retry_button, "Select failed books with Ctrl/Shift. Retry opens options for review; recovery checks still apply. Available for the current run only.")
+        books.Controls.Add(toolbar); listing.BringToFront()
+        self._result_tools = toolbar
+        self._result_selection_changed(None, None)
         self._report_box = RichTextBox()
         self._report_box.Dock = DockStyle.Fill
         self._report_box.Multiline = True
+        self._report_box.MaxLength = System.Int32.MaxValue
         self._report_box.ReadOnly = True
         self._report_box.ScrollBars = RichTextBoxScrollBars.Both
         self._report_box.WordWrap = True
         self._report_box.Font = Font("Consolas", 9.0)
-        self._report_box.Text = self._report_text
+        self._technical_page = technical
+        self._technical_loaded = False
         technical.Controls.Add(self._report_box)
-        _add_report_reader(self, technical)
+        self._tabs.SelectedIndexChanged += self._load_technical_report
+        self.Shown += self._load_technical_report
         if summary.get("Preview Folder", ""):
             self._preview_folder = summary["Preview Folder"]
             self._delete_previews_checkbox = _new_checkbox()
@@ -2884,7 +3287,7 @@ class ReportForm(Form):
             self._delete_previews_checkbox.Size = Size(940, 26)
             self.Controls.Add(self._delete_previews_checkbox)
             self.FormClosing += self._closing_results
-            preview_button = Button()
+            preview_button = _new_button()
             preview_button.Text = "Open previews"
             preview_button.Enabled = _preview_state(self._preview_folder) == "Available"
             self._delete_previews_checkbox.Enabled = Directory.Exists(self._preview_folder)
@@ -2893,15 +3296,349 @@ class ReportForm(Form):
             preview_button.Anchor = AnchorStyles.Bottom | AnchorStyles.Right
             preview_button.Click += self._open_trial_previews
             self.Controls.Add(preview_button)
-        _ui_label(self, "Central report saved in plugin Reports folder", 24, 666, 450, 24).Anchor = AnchorStyles.Bottom | AnchorStyles.Left
+        folder_button = _new_button()
+        folder_button.Text, folder_button.Location, folder_button.Size = "Open report folder", Point(24, 660), Size(160, 32)
+        folder_button.Anchor = AnchorStyles.Bottom | AnchorStyles.Left
+        folder_button.Click += self._open_report_folder
+        self.Controls.Add(folder_button)
         for text, x, handler in [("Copy report", 680, self._copy_report), ("Open report", 802, self._open_report), ("Close", 924, self._close)]:
-            button = Button()
+            button = _new_button()
             button.Text = text
             button.Location = Point(x, 660)
             button.Size = Size(112, 32)
             button.Anchor = AnchorStyles.Bottom | AnchorStyles.Right
             button.Click += handler
             self.Controls.Add(button)
+        self._render_result_page()
+        self._restore_result_preferences()
+
+    def _record_values(self, record):
+        values = [record.get('book', ''), _result_display_status(record)]
+        values += [record.get(q + ' Savings', '-') for q in TRIAL_QUALITY_LEVELS] if self._trial_results else [record.get('Savings', '-')]
+        return values + [record.get('Notes', '')]
+
+    def _render_result_page(self):
+        """Keep native controls bounded, even for six-figure library selections."""
+        listing = self._results_list
+        self._results_refreshing = True
+        listing.BeginUpdate()
+        try:
+            listing.ListViewItemSorter = None
+            listing.Items.Clear()
+            start = self._page_index * self._page_size
+            for record in self._visible_records[start:start + self._page_size]:
+                values = self._record_values(record)
+                item = ListViewItem(values[0])
+                item.Tag = {'record': record, 'index': record['_index']}
+                for value in values[1:]: item.SubItems.Add(value)
+                listing.Items.Add(item)
+            total = len(self._visible_records)
+            self._page_label.Text = (str(start + 1) + '-' + str(min(start + self._page_size, total)) + ' of ' + str(total)) if total else 'No matching books'
+            self._previous_button.Enabled = self._page_index > 0
+            self._next_button.Enabled = start + self._page_size < total
+            self._apply_result_colors()
+        finally:
+            listing.EndUpdate()
+            self._results_refreshing = False
+        self._result_selection_changed(None, None)
+
+    def _filter_changed(self, sender, event):
+        category = ['All', 'Errors', 'Skipped', 'Converted', 'Not processed', 'Other'][self._filter_combo.SelectedIndex]
+        needle = _safe_unicode(self._result_search.Text).strip().lower()
+        self._visible_records = [r for r in self._records if (category == 'All' or r['_category'] == category) and (not needle or needle in r['_search'])]
+        self._page_index = 0
+        self._sort_visible_records()
+        self._render_result_page()
+
+    def _paint_search_border(self, sender, event):
+        pen = System.Drawing.Pen(Color.FromArgb(78, 84, 94) if globals().get('_DARK_MODE') else Color.FromArgb(155, 160, 168))
+        try: event.Graphics.DrawRectangle(pen, 0, 0, sender.Width - 1, sender.Height - 1)
+        finally: pen.Dispose()
+
+    def _search_changed(self, sender, event):
+        self._search_timer.Stop(); self._search_timer.Start()
+
+    def _search_results(self, sender, event):
+        self._search_timer.Stop(); self._filter_changed(None, None)
+
+    def _dispose_result_timer(self, sender, event):
+        self._search_timer.Stop(); self._search_timer.Dispose()
+        self._results_tip.Dispose()
+
+    def _previous_page(self, sender, event):
+        self._page_index = max(0, self._page_index - 1); self._render_result_page()
+
+    def _next_page(self, sender, event):
+        if (self._page_index + 1) * self._page_size < len(self._visible_records):
+            self._page_index += 1; self._render_result_page()
+
+    def _sort_visible_records(self):
+        column, ascending = self._sort_column, self._sort_ascending
+        def compare(left, right):
+            if column < 0: return left['_index'] - right['_index']
+            a, b = self._record_values(left)[column], self._record_values(right)[column]
+            if column >= 2 and column < len(self._result_column_titles) - 1:
+                def number(value):
+                    try: return float(value.rstrip('%').strip())
+                    except Exception: return None
+                a, b = number(a), number(b)
+                if a is None or b is None:
+                    return ((1 if a is None else -1) if a != b else left['_index'] - right['_index'])
+            elif column == 1:
+                a = (0 if left["_category"] == "Errors" else _result_status_group(_result_record_status(left)), a.lower())
+                b = (0 if right["_category"] == "Errors" else _result_status_group(_result_record_status(right)), b.lower())
+            else: a, b = a.lower(), b.lower()
+            result = (a > b) - (a < b)
+            return (result if ascending else -result) if result else left['_index'] - right['_index']
+        self._visible_records.sort(cmp=compare)
+
+    def _load_technical_report(self, sender, event):
+        if self._tabs.SelectedTab == self._technical_page and not self._technical_loaded:
+            self._technical_loaded = True
+            self._report_box.Text = self._report_text
+            _add_report_reader(self, self._technical_page)
+
+    def _recorded_options(self):
+        if self._run_options: return dict(self._run_options)
+        options = {}
+        record_path = Path.ChangeExtension(self._report_path, '.run.xml')
+        if File.Exists(record_path):
+            document = XmlDocument(); document.XmlResolver = None; document.Load(record_path)
+            for node in document.SelectNodes('/Run/Options/Setting'):
+                options[_safe_unicode(node.GetAttribute('key'))] = _safe_unicode(node.GetAttribute('value'))
+        options.setdefault('run_mode', dict(self._summary_items).get('Run Mode', 'Analyze Only'))
+        return options
+
+    def _view_settings(self, sender, event):
+        try:
+            text = 'Recorded run settings\r\n\r\n' + _result_settings_text(self._recorded_options())
+            dialog = ResultDetailsForm(text)
+            dialog.Text = 'WebP Optimizer - Run settings'
+            try: _show_owned_dialog(dialog, self)
+            finally: dialog.Dispose()
+        except Exception, ex:
+            MessageBox.Show('Could not read run settings: ' + _safe_unicode(ex), 'WebP Optimizer')
+
+    def _support_info(self, sender, event):
+        try:
+            options = self._recorded_options()
+            version = 'Unknown'
+            for line in File.ReadAllLines(Path.Combine(SCRIPT_DIR, 'Package.ini')):
+                if "=" in line and line.split("=", 1)[0].strip().lower() == "version": version = line.split("=", 1)[1].strip()
+            text = 'WebP Optimizer support information\r\nPlugin version: ' + version
+            try: text += '\r\nComicRack version: ' + _safe_unicode(ComicRack.App.GetType().Assembly.GetName().Version)
+            except Exception: text += '\r\nComicRack version: please add manually'
+            text += '\r\n\r\n' + _result_settings_text(options)
+            text += '\r\n\r\nDependency discovery (not a functional test):'
+            for name, finder in [('7-Zip', _find_archive_tool), ('Python', _find_python_tool), ('WinRAR (optional)', _find_rar_tool)]:
+                try: text += '\r\n' + name + ': ' + _safe_unicode(finder() or 'Not found')
+                except Exception, ex: text += '\r\n' + name + ': ' + _safe_unicode(ex)
+            text += '\r\nFor a full dependency test, use Tools & recovery > Check setup.'
+            text += '\r\n\r\n' + (self._selected_result_text() or 'No individual book selected. Select a failed entry to include its error.')
+            dialog = ResultDetailsForm(text, editable=True, setup_options=options)
+            dialog.Text = 'WebP Optimizer - Review support information before sharing'
+            try: _show_owned_dialog(dialog, self)
+            finally: dialog.Dispose()
+        except Exception, ex:
+            MessageBox.Show('Could not prepare support information: ' + _safe_unicode(ex), 'WebP Optimizer')
+
+    def _retry_selected(self, sender, event):
+        """Prepare only failed captured books. Never bypass pending-work guards."""
+        if self._retry_books is None: return
+        chosen = []
+        for item, tag in self._selected_result_rows():
+            record = tag['record']
+            if record['_category'] != 'Errors': continue
+            index = record['_index']
+            if index >= len(self._retry_books): continue
+            book = self._retry_books[index]
+            expected = record.get('Source', record.get('File', ''))
+            actual = _safe_unicode(getattr(book, 'FilePath', ''))
+            try:
+                matches = bool(expected and actual and Path.GetFullPath(expected).lower() == Path.GetFullPath(actual).lower())
+            except Exception:
+                matches = False
+            if not matches:
+                MessageBox.Show('A selected book path changed or is invalid. Reselect the intended comic in ComicRack and review interrupted work before retrying.', 'WebP Optimizer')
+                return
+            chosen.append(book)
+        if not chosen: return
+        self._queue_retry_books(chosen)
+
+    def _open_interrupted_work(self, sender, event):
+        """Direct recovery route; historical windows never fabricate library refs."""
+        class SourceReference(object):
+            def __init__(self, path): self.FilePath = path
+        rows = self._selected_result_rows()
+        records = [tag['record'] for item, tag in rows] if rows else [record for record in self._records if record['_category'] == 'Errors']
+        paths = list(set(record.get('Source', record.get('File', '')) for record in records))
+        paths = [path for path in paths if path]
+        dialog = RecoveryForm([SourceReference(path) for path in paths], focus_sources=paths, allow_prepare=self._retry_books is not None)
+        retry_sources = []
+        try:
+            _show_owned_dialog(dialog, self)
+            retry_sources = list(dialog.retry_sources)
+        finally: dialog.Dispose()
+        if retry_sources and self._retry_books is not None:
+            keys = set()
+            for path in retry_sources:
+                try: keys.add(Path.GetFullPath(path).lower())
+                except Exception: pass
+            chosen, seen = [], set()
+            for book in self._retry_books:
+                try: key = Path.GetFullPath(_safe_unicode(getattr(book, 'FilePath', ''))).lower()
+                except Exception: continue
+                if key in keys and key not in seen:
+                    chosen.append(book); seen.add(key)
+            if chosen: self._queue_retry_books(chosen)
+            else: MessageBox.Show('Retries were allowed, but those books are not in the captured ComicRack selection. Select them in ComicRack and start a new run.', 'WebP Optimizer')
+
+    def _queue_retry_books(self, books):
+        draft = dict(self._run_options)
+        draft.pop('_progress_form', None); draft.pop('prefetch_record', None)
+        self.retry_request = (books, draft)
+        self.Close()
+
+    def _open_report_folder(self, sender, event):
+        try: Process.Start(Path.GetDirectoryName(Path.GetFullPath(self._report_path)))
+        except Exception, ex: MessageBox.Show('Could not open report folder: ' + _safe_unicode(ex), 'WebP Optimizer')
+
+    def _restore_result_preferences(self):
+        settings, warning = _load_settings()
+        self._result_colors.Checked = settings.get("results_status_colors", "False").lower() == "true"
+        errors_first = settings.get("results_errors_first", "False").lower() == "true"
+        key = settings.get("results_sort_column", "")
+        if errors_first:
+            self._sort_results(1, True)
+        elif key in self._result_column_titles:
+            self._sort_results(self._result_column_titles.index(key), settings.get("results_sort_ascending", "True").lower() == "true")
+        self._apply_result_colors()
+        self._result_preferences_restoring = False
+
+    def _remember_result_preferences(self):
+        if self._result_preferences_restoring:
+            return
+        try:
+            settings, warning = _load_settings()
+            if warning:
+                raise Exception(warning)
+            settings.update({"results_status_colors": str(bool(self._result_colors.Checked)),
+                             "results_errors_first": str(bool(self._errors_first_checkbox.Checked)),
+                             "results_sort_column": self._result_column_titles[self._sort_column] if self._sort_column >= 0 else "",
+                             "results_sort_ascending": str(bool(self._sort_ascending))})
+            _save_settings(settings)
+        except Exception, ex:
+            MessageBox.Show("Results preferences could not be saved: " + _safe_unicode(ex), "WebP Optimizer", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+
+    def _result_colors_changed(self, sender, event):
+        self._apply_result_colors()
+        self._remember_result_preferences()
+
+    def _errors_first_changed(self, sender, event):
+        if self._result_preferences_restoring:
+            return
+        self._sort_results(1 if self._errors_first_checkbox.Checked else -1, True)
+
+    def _selected_result_rows(self):
+        """Native selection notifications can outlive a row's managed Tag."""
+        if self.IsDisposed or self.Disposing or self._results_list.IsDisposed or getattr(self, '_results_refreshing', False):
+            return []
+        rows = []
+        for item in list(self._results_list.SelectedItems):
+            tag = item.Tag
+            if tag is not None and hasattr(tag, 'get') and tag.get('record') is not None and 'index' in tag:
+                rows.append((item, tag))
+        return rows
+
+    def _result_selection_changed(self, sender, event):
+        if self.IsDisposed or self.Disposing or getattr(self, '_results_refreshing', False): return
+        rows = self._selected_result_rows()
+        selected = len(rows) == 1
+        for button in self._entry_buttons:
+            button.Enabled = selected
+        if hasattr(self, '_selection_explanation'):
+            if selected:
+                record = rows[0][1]['record']
+                self._selection_heading.Text = _result_display_status(record) + "  |  " + record.get('book', '')
+                explanation = record.get('Notes', '') or 'Open full details for the complete record.'
+                if record.get('Suggested action'): explanation += "\r\nNext step: " + record['Suggested action']
+                self._selection_explanation.Text = explanation
+                text = '\n'.join(record.get('raw_lines', [])).lower()
+                self._recovery_button.Visible = record['_category'] == 'Errors' and any(word in text for word in ['interrupt', 'checkpoint', 'recovery', 'retained', 'rollback', 'pending'])
+            else:
+                self._recovery_button.Visible = False
+                self._selection_heading.Text = 'Select a book to review'
+                self._selection_explanation.Text = 'Its explanation and suggested next step will appear here. Use View entry for full technical details.'
+        if hasattr(self, '_retry_button'):
+            self._retry_button.Enabled = self._retry_books is not None and any(tag['record']['_category'] == 'Errors' for item, tag in rows)
+
+    def _result_column_clicked(self, sender, event):
+        self._sort_results(event.Column)
+
+    def _sort_results(self, column, force_ascending=None):
+        ascending = not self._sort_ascending if self._sort_column == column else True
+        if force_ascending is not None:
+            ascending = force_ascending
+        self._sort_column, self._sort_ascending = column, ascending
+        selected = set(tag['index'] for item, tag in self._selected_result_rows())
+        self._sort_visible_records()
+        self._page_index = 0
+        self._render_result_page()
+        for item in self._results_list.Items:
+            item.Selected = item.Tag['index'] in selected
+        for index, title in enumerate(self._result_column_titles):
+            self._results_list.Columns[index].Text = title + ((" [asc]" if ascending else " [desc]") if index == column else "")
+        restoring = self._result_preferences_restoring
+        self._result_preferences_restoring = True
+        try:
+            self._errors_first_checkbox.Checked = column == 1 and ascending
+        finally:
+            self._result_preferences_restoring = restoring
+        self._remember_result_preferences()
+
+    def _errors_first(self, sender, event):
+        self._sort_results(1, True)
+
+    def _selected_result_text(self):
+        rows = self._selected_result_rows()
+        if len(rows) != 1:
+            return ""
+        record = rows[0][1]['record']
+        summary = dict(self._summary_items)
+        return ("WebP Optimizer - Selected book details\r\nReport: " + _safe_unicode(self._report_path)
+                + "\r\nGenerated: " + summary.get("Generated", "Not recorded")
+                + "\r\nAction: " + summary.get("Run Mode", "Analyze Only")
+                + "\r\n\r\n" + "\r\n".join(record['raw_lines']))
+
+    def _view_result(self, sender, event):
+        text = self._selected_result_text()
+        if not text:
+            return
+        dialog = ResultDetailsForm(text)
+        try:
+            _show_owned_dialog(dialog, self)
+        finally:
+            dialog.Dispose()
+
+    def _copy_result(self, sender, event):
+        text = self._selected_result_text()
+        if text:
+            try:
+                Clipboard.SetText(text)
+            except Exception, ex:
+                MessageBox.Show("Could not copy selected entry: " + _safe_unicode(ex), "WebP Optimizer")
+
+    def _apply_result_colors(self, sender=None, event=None):
+        if not hasattr(self, '_result_colors'):
+            return
+        dark = bool(globals().get('_DARK_MODE', False))
+        palette = ([Color.FromArgb(245, 151, 151), Color.FromArgb(235, 206, 122), Color.FromArgb(190, 195, 202), Color.FromArgb(145, 218, 170)] if dark
+                   else [Color.FromArgb(175, 42, 42), Color.FromArgb(120, 85, 0), Color.FromArgb(85, 90, 100), Color.FromArgb(30, 100, 55)])
+        for item in self._results_list.Items:
+            tag = item.Tag
+            if tag is None or not hasattr(tag, 'get') or tag.get('record') is None: continue
+            item.ForeColor = palette[0 if tag["record"]["_category"] == "Errors" else _result_status_group(_result_record_status(tag["record"]))] if self._result_colors.Checked else Color.Empty
+        self._results_list.Invalidate()
 
     def _closing_results(self, sender, event):
         if self._historical and not self._delete_previews_checkbox.Checked:
@@ -3117,6 +3854,7 @@ def _run_phase_one(books, options=None):
 
     _ensure_directory(REPORT_DIR)
     progress_form = ProgressForm()
+    run_clock = Stopwatch.StartNew()
     progress_form.Show()
     results = []
 
@@ -3142,6 +3880,7 @@ def _run_phase_one(books, options=None):
         for index in range(scanned_count, total):
             results.append(_unprocessed_book(books[index]))
         report_text = _build_analysis_report(results, tool_path)
+        report_text = report_text.replace("Generated: ", "Elapsed Time: {0:.1f} seconds\r\nGenerated: ".format(run_clock.Elapsed.TotalSeconds), 1)
         report_text = _run_report_status(report_text, total, scanned_count, progress_form.stop_requested and scanned_count < total)
         _write_text_file(report_path, report_text)
         report_text = _copy_reports_to_sources(report_text, report_path, results, options or {})
@@ -3152,16 +3891,20 @@ def _run_phase_one(books, options=None):
         finally:
             _end_keep_awake(awake)
 
-    report_form = ReportForm(report_text, report_path)
-    report_form.ShowDialog()
+    report_form = ReportForm(report_text, report_path, retry_books=books, run_options=options)
+    try:
+        report_form.ShowDialog()
+        return report_form.retry_request
+    finally:
+        report_form.Dispose()
 
 
-def _run_phase_two(books):
+def _run_phase_two(books, initial_options=None):
     """Show options/history, then scan and process only the captured selection.
 
     Options open before dependency checks so history needs neither selected
     books nor a working conversion toolchain. Stop checks bracket each book."""
-    options = _choose_options_with_history(books)
+    options = _choose_options_with_history(books) if initial_options is None else _choose_options_with_history(books, initial_options)
     if options is None:
         return
     if not books or len(books) == 0:
@@ -3185,8 +3928,7 @@ def _run_phase_two(books):
         return
 
     if _safe_unicode(options.get("run_mode", "")) == "Analyze Only":
-        _run_phase_one(books, options)
-        return
+        return _run_phase_one(books, options)
 
     python_tool = _find_python_tool()
     if not python_tool:
@@ -3207,6 +3949,7 @@ def _run_phase_two(books):
 
     _ensure_directory(REPORT_DIR)
     progress_form = ProgressForm()
+    run_clock = Stopwatch.StartNew()
     progress_form.Show()
     options["_progress_form"] = progress_form
     results = []
@@ -3311,6 +4054,18 @@ def _run_phase_two(books):
                 conversion_results.append(_run_quality_trial(python_tool, tool_path, result, options, book, progress_form))
                 continue
 
+            conflict = _replacement_source_problem(_safe_unicode(result.get("file_path", "")), options) or _replacement_destination_conflict(_safe_unicode(result.get("file_path", "")), options)
+            if conflict is not None:
+                if options.get("prefetch_record"):
+                    try:
+                        _cleanup_prefetch(python_tool, options)
+                    except Exception, ex:
+                        conflict["CLEANUP_WARNING"] = _safe_unicode(ex)
+                        progress_form.stop_requested = True
+                conversion_results.append(conflict)
+                _status_after_conversion(book, result, conflict, options)
+                continue
+
             attempt_options = dict(options)
             if options.get("prefetch") and options.get("work_dir") and index + 1 < total and not progress_form.stop_requested:
                 attempt_options["prefetch_next"] = _safe_unicode(getattr(books[index + 1], "FilePath", ""))
@@ -3373,6 +4128,7 @@ def _run_phase_two(books):
         report_path = Path.Combine(REPORT_DIR, "webp_conversion_{0}_{1}.txt".format(timestamp, System.Guid.NewGuid().ToString("N")[:8]))
         report_text = _build_quality_trial_report(results, conversion_results, tool_path, options) if benchmark_mode else _build_conversion_report(results, conversion_results, tool_path, options)
         processed = len([r for r in conversion_results if r.get("STATUS", "") != "NOT_PROCESSED"])
+        report_text = report_text.replace("Generated: ", "Elapsed Time: {0:.1f} seconds\r\nGenerated: ".format(run_clock.Elapsed.TotalSeconds), 1)
         report_text = _run_report_status(report_text, total, processed, progress_form.stop_requested and processed < total)
         _write_text_file(report_path, report_text)
         report_text = _copy_reports_to_sources(report_text, report_path, results, options or {})
@@ -3389,8 +4145,12 @@ def _run_phase_two(books):
         finally:
             _end_keep_awake(awake)
 
-    report_form = ReportForm(report_text, report_path)
-    report_form.ShowDialog()
+    report_form = ReportForm(report_text, report_path, retry_books=books, run_options=options)
+    try:
+        report_form.ShowDialog()
+        return report_form.retry_request
+    finally:
+        report_form.Dispose()
 
 
 # [P21] Native support definitions share this adapter namespace deliberately.
@@ -3414,7 +4174,9 @@ def webp_optimizer_phase_one(books):
         return
     _RUN_ACTIVE = True
     try:
-        _run_phase_two(list(books) if books else [])
+        request = (list(books) if books else [], None)
+        while request is not None:
+            request = _run_phase_two(request[0], request[1])
     except Exception, ex:
         MessageBox.Show(_safe_unicode(ex), "WebP Optimizer", MessageBoxButtons.OK, MessageBoxIcon.Error)
     finally:

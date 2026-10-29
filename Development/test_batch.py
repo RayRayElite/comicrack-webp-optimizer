@@ -104,8 +104,10 @@ try:
             return DialogResult.OK
     batch_reports = []
     class BatchReport(object):
-        def __init__(self, text, path):
+        def __init__(self, text, path, **kwargs):
+            self.retry_request = None
             batch_reports.append(text)
+        def Dispose(self): pass
         def ShowDialog(self):
             pass
     NativeProgress = ProgressForm

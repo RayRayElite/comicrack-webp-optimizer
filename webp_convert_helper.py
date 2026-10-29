@@ -23,10 +23,16 @@ import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+# The host protocol must handle every Windows filename, including characters
+# outside cp1252. Parent processes explicitly decode this stream as UTF-8.
+for _stream in [sys.stdout, sys.stderr]:
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import performance_support as perf
 
-from PIL import Image, ImageCms, features
+from PIL import Image, ImageCms, features, UnidentifiedImageError
 
 
 # ===========================================================================
@@ -267,8 +273,8 @@ def cleanup_temporary_storage(root):
 
 def run_extract(archive_tool, archive_path, target_dir):
     """Extract into caller-owned work storage and return the 7-Zip exit/output tuple."""
-    command = [archive_tool, "x", "-y", archive_path, f"-o{target_dir}"]
-    result = perf.run_tool(command, capture_output=True, text=True)
+    command = [archive_tool, "x", "-y", "-sccUTF-8", archive_path, f"-o{target_dir}"]
+    result = perf.run_tool(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode == 0:
         prepare_extracted_storage(target_dir)
     return result.returncode, result.stdout, result.stderr
@@ -382,7 +388,69 @@ def encode_with_cwebp(tool_path, file_path, webp_path, options, resize_mode):
 # ===========================================================================
 # [H06] Staged-page conversion and collision checks
 # ===========================================================================
-def convert_pages(page_files, mode, encoder_backend, resize_mode, page_workers=1, progress=None):
+class PageProcessingError(RuntimeError):
+    """User-facing explanation plus unchanged technical evidence for one page."""
+    def __init__(self, code, page, stage, summary, action, detail):
+        def one_line(value):
+            return str(value).replace("\r", "\\r").replace("\n", "\\n")
+        self.fields = {"ERROR_CODE": code, "ERROR_PAGE": one_line(page),
+                       "ERROR_STAGE": stage, "ERROR_ACTION": action,
+                       "ERROR_DETAIL": one_line(detail)}
+        super().__init__(summary + " Page: " + one_line(page) + ". " + action + " Original archive was not replaced.")
+
+
+def explain_page_failure(error, file_path, stage, page_root=None):
+    """Decode source only after a failure; do not add work to successful pages.
+
+    Never infer corruption from an encoder's error text alone. Access, missing
+    files, memory and safety limits stay distinct from unreadable image data.
+    """
+    page = os.path.relpath(file_path, page_root) if page_root else Path(file_path).name
+    detail = str(error)
+    def failure(code, summary, action):
+        return PageProcessingError(code, page, stage, summary, action, detail)
+    if isinstance(error, PermissionError):
+        return failure("FILE_ACCESS_ERROR", "File access was denied during " + stage + "; this is not evidence of a damaged comic.",
+                       "Check temporary-folder permissions or another program holding the file open, then retry.")
+    if isinstance(error, OSError) and (error.errno == 28 or getattr(error, "winerror", None) in [39, 112]):
+        return failure("DISK_SPACE_ERROR", "Storage ran out of space during " + stage + ".",
+                       "Free space on the temporary/output drives, then retry.")
+    if isinstance(error, FileNotFoundError):
+        return failure("FILE_NOT_FOUND", "A required file or tool disappeared during " + stage + ".",
+                       "Check tool setup, temporary storage and security-software history; this does not establish comic corruption.")
+    if isinstance(error, MemoryError):
+        return failure("MEMORY_ERROR", "There was not enough memory to process this page.",
+                       "Close other applications or reduce concurrent page workers, then retry.")
+    if isinstance(error, Image.DecompressionBombError):
+        return failure("IMAGE_SAFETY_LIMIT", "The page exceeds the decoder's image-size safety limit.",
+                       "Inspect the page dimensions; a safety-limit rejection does not mean the page is corrupt.")
+    if stage == "removing extracted JPEG":
+        return failure("TEMP_CLEANUP_ERROR", "The converted temporary JPEG could not be removed.",
+                       "Inspect the temporary-folder access/lock problem; do not delete the source comic.")
+    try:
+        with Image.open(file_path) as original:
+            original.load()
+    except (PermissionError, FileNotFoundError, MemoryError, Image.DecompressionBombError) as source_error:
+        return explain_page_failure(source_error, file_path, "reading source image", page_root)
+    except (UnidentifiedImageError, OSError) as source_error:
+        if isinstance(source_error, OSError) and source_error.errno is not None:
+            return failure("SOURCE_READ_ERROR", "The source page could not be read from storage.",
+                           "Check file access and storage errors; image corruption has not been established.")
+        detail += " | Source decode check: " + str(source_error)
+        return failure("SOURCE_IMAGE_UNREADABLE", "Source image problem: this page cannot be decoded; its data may be damaged, malformed or unsupported.",
+                       "Open this page in the original comic and restore a clean page/archive from backup if needed. Retrying the same bytes may fail again.")
+    except Exception as source_error:
+        detail += " | Source decode check inconclusive: " + str(source_error)
+        return failure("PAGE_PROCESSING_ERROR", "Page processing failed; the source-image check was inconclusive.",
+                       "Keep the original comic and share the technical diagnostic when reporting this issue.")
+    if stage == "validating converted image":
+        return failure("OUTPUT_IMAGE_INVALID", "The converted page failed validation, although the original page passed a decode check.",
+                       "Keep the original comic and report the encoder/output validation diagnostic; source corruption is not confirmed.")
+    return failure("ENCODER_ERROR", "The encoder failed, although the original page passed a decode check.",
+                   "Check the selected encoder setup or report the diagnostic; source corruption is not confirmed.")
+
+
+def convert_pages(page_files, mode, encoder_backend, resize_mode, page_workers=1, progress=None, page_root=None):
     """Encode independent staged JPEGs with bounded concurrency and full validation.
 
     Preflight every target before starting any worker. Only temporary pages are
@@ -399,27 +467,36 @@ def convert_pages(page_files, mode, encoder_backend, resize_mode, page_workers=1
         target = str(Path(source).with_suffix(".webp"))
         key = target.casefold()
         if key in targets or os.path.exists(target):
-            raise RuntimeError("Page name collision: " + target)
+            raise RuntimeError("Page name collision: converting " + str(Path(source).name) + " would overwrite " + str(Path(target).name) + ". The archive contains pages sharing a WebP output name. Inspect/rename the conflicting members while preserving page order; no page was dropped or overwritten.")
         targets.add(key)
 
     completed = [0]
     progress_lock = threading.Lock()
 
     def encode_page(file_path):
-        webp_path = str(Path(file_path).with_suffix(".webp"))
-        if backend_name == "ImageMagick (Recommended)":
-            applied = encode_with_magick(backend_tool, file_path, webp_path, options, resize_mode, backend_name)
-        elif backend_name == "cwebp":
-            applied = encode_with_cwebp(backend_tool, file_path, webp_path, options, resize_mode)
-        else:
-            applied = encode_with_pillow(file_path, webp_path, options, resize_mode)
-        with Image.open(webp_path) as converted:
-            converted.load()
-            with Image.open(file_path) as original:
-                expected = calculate_resize_dimensions(*original.size, resize_mode) or original.size
-            if converted.format != "WEBP" or converted.size != expected:
-                raise RuntimeError("Converted page format or dimensions do not match: " + webp_path)
-        os.remove(file_path)
+        stage = "preparing page"
+        try:
+            webp_path = str(Path(file_path).with_suffix(".webp"))
+            stage = "encoding source image"
+            if backend_name == "ImageMagick (Recommended)":
+                applied = encode_with_magick(backend_tool, file_path, webp_path, options, resize_mode, backend_name)
+            elif backend_name == "cwebp":
+                applied = encode_with_cwebp(backend_tool, file_path, webp_path, options, resize_mode)
+            else:
+                applied = encode_with_pillow(file_path, webp_path, options, resize_mode)
+            stage = "validating converted image"
+            with Image.open(webp_path) as converted:
+                converted.load()
+                with Image.open(file_path) as original:
+                    expected = calculate_resize_dimensions(*original.size, resize_mode) or original.size
+                if converted.format != "WEBP" or converted.size != expected:
+                    raise RuntimeError("Converted page format or dimensions do not match: " + webp_path)
+            stage = "removing extracted JPEG"
+            os.remove(file_path)
+        except PageProcessingError:
+            raise
+        except Exception as error:
+            raise explain_page_failure(error, file_path, stage, page_root) from error
         with progress_lock:
             completed[0] += 1
             if progress:
@@ -551,7 +628,7 @@ def validate_embedded_metadata(output_path, archive_tool):
             comicbook_embedded = "ComicBook.xml" in names
         return comicinfo_embedded, comicbook_embedded
 
-    result = perf.run_tool([archive_tool, "l", "-ba", output_path], capture_output=True, text=True)
+    result = perf.run_tool([archive_tool, "l", "-ba", "-sccUTF-8", output_path], capture_output=True, text=True, encoding="utf-8", errors="replace")
     listing = result.stdout or ""
     comicinfo_embedded = "ComicInfo.xml" in listing
     comicbook_embedded = "ComicBook.xml" in listing
@@ -620,7 +697,7 @@ def validate_output(output_path, archive_tool, root_dir, workers=1):
                     future.result()
 
     else:
-        result = perf.run_tool([archive_tool, "t", output_path], capture_output=True, text=True)
+        result = perf.run_tool([archive_tool, "t", "-sccUTF-8", output_path], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             raise RuntimeError("Output CBR integrity check failed.")
         with tempfile.TemporaryDirectory(prefix="webp_verify_") as verified:
@@ -682,7 +759,7 @@ def inspect_archive(archive_path, archive_tool, work_dir):
     else:
         if not archive_tool:
             raise RuntimeError("7-Zip is required to check this non-ZIP archive")
-        checked = perf.run_tool([archive_tool, "t", str(path)], capture_output=True, text=True, timeout=120)
+        checked = perf.run_tool([archive_tool, "t", "-sccUTF-8", str(path)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         if checked.returncode:
             raise RuntimeError("Archive integrity test failed: " + (checked.stderr or checked.stdout)[-2000:])
         with tempfile.TemporaryDirectory(prefix="recovery_check_", dir=work_dir) as expanded:
@@ -739,7 +816,7 @@ def diagnostics_main(argv):
                 archive.write(original.with_suffix(".webp"), "probe.webp")
             if not args.archive_tool:
                 raise RuntimeError("7-Zip missing. Restore ComicRack's Resources/7z.exe or 7za.exe")
-            tested = perf.run_tool([args.archive_tool, "t", str(sample)], capture_output=True, text=True, timeout=30)
+            tested = perf.run_tool([args.archive_tool, "t", "-sccUTF-8", str(sample)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             if tested.returncode:
                 raise RuntimeError("7-Zip could not test the generated archive")
             checks["CHECK_ARCHIVE_TOOL"] = "OK | 7-Zip tested a generated CBZ"
@@ -818,11 +895,13 @@ def main():
             print_result({"PREFETCH_USED": "Yes" if reused else "No"})
         code, _, stderr = run_extract(args.archive_tool, extraction_source, temp_dir)
         if code != 0:
-            print_result({
-                "STATUS": "ERROR",
-                "MESSAGE": stderr.strip() or "Could not extract archive.",
-                "SOURCE_SIZE": source_size,
-            })
+            detail = stderr.strip().replace("\r", "\\r").replace("\n", "\\n")
+            headers = "headers error" in detail.lower()
+            print_result({"STATUS": "ERROR", "SOURCE_SIZE": source_size,
+                          "ERROR_CODE": "ARCHIVE_HEADERS_ERROR" if headers else "ARCHIVE_EXTRACTION_ERROR",
+                          "ERROR_STAGE": "extracting source archive", "ERROR_DETAIL": detail,
+                          "ERROR_ACTION": "Test the original archive with 7-Zip and restore/recover a verified clean copy; do not skip failed members." if headers else "Check the technical archive diagnostic for access, storage or archive problems.",
+                          "MESSAGE": ("Source archive header problem: 7-Zip could not extract every member. Test/restore the original archive; no replacement was performed." if headers else "Archive extraction failed. Check access/storage and test the original archive; no replacement was performed.")})
             return 1
 
         if args.prefetch_record:
@@ -858,7 +937,7 @@ def main():
             prefetch = perf.Prefetch(args.prefetch_next, work_root, args.prefetch_budget_mb)
         elif args.prefetch_next:
             print_result({"PREFETCH_NOTE": "Prefetch requires an explicitly chosen local fixed-drive temporary folder"})
-        conversion_summary = convert_pages(page_files, args.quality_mode, args.encoder_backend, args.resize_mode, args.page_workers, emit_progress)
+        conversion_summary = convert_pages(page_files, args.quality_mode, args.encoder_backend, args.resize_mode, args.page_workers, emit_progress, temp_dir)
         timings[stage] = time.perf_counter() - stage_started
         stage, stage_started = "REBUILD", time.perf_counter()
         updated_pages = walk_page_files(temp_dir)
@@ -934,11 +1013,10 @@ def main():
         return 0
     except Exception as exc:
         keep_prefetch = False
-        print_result({
-            "STATUS": "ERROR",
-            "MESSAGE": str(exc),
-            "SOURCE_SIZE": source_size,
-        })
+        failure = {"STATUS": "ERROR", "MESSAGE": str(exc), "SOURCE_SIZE": source_size}
+        if isinstance(exc, PageProcessingError):
+            failure.update(exc.fields)
+        print_result(failure)
         return 1
     finally:
         timings[stage] = time.perf_counter() - stage_started

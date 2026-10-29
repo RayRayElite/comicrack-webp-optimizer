@@ -213,7 +213,9 @@ try:
             return DialogResult.OK
     reports = []
     class CaptureReport(object):
-        def __init__(self, text, path):
+        def Dispose(self): pass
+        def __init__(self, text, path, **kwargs):
+            self.retry_request = None
             reports.append(text)
         def ShowDialog(self):
             pass
@@ -367,6 +369,7 @@ try:
     print("PASS: native setup/preflight/recovery renders, live page display and remembered opt-in power setting")
     # Actual native controls: theme round trip, retained text and search/wrap.
     form = OptionsForm()
+    form._dark_checkbox.Checked = False
     light = form.BackColor
     form._dark_checkbox.Checked = True
     assert form.BackColor == Color.FromArgb(28, 30, 34)

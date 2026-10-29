@@ -1,185 +1,268 @@
 # Release notes
 
+## 1.1.0 - 2026-10-29
+
+### Features
+
+- Open interrupted-work review from results, check and allow retries for multiple attempts, and prepare a retry for cleared books from the current run.
+- Record WebPReadOnly during analysis for smart lists identifying protected original archives. Reanalysis refreshes Yes/No/Unknown without changing file attributes.
+- Filter and search results by outcome, including a separate Not processed category for untouched books. Sort columns or bring errors to the top.
+- View, copy or save one book's complete details. Selecting a book also shows its explanation and suggested next step below the table.
+- Prepare another run for selected failures, with settings review and existing interrupted-work safeguards.
+- Prepare editable support information, optionally add setup-check results, then redact before copying or saving.
+- Review recorded run settings and access report tools through More. Optional status colors and sort preferences are remembered.
+
+### Changes
+
+- Apply a coordinated design to options, results, progress, previews, history, setup, recovery and benchmarks, with clearer headings, grouped settings and prominent primary actions.
+- Show concise quality estimates with an About this estimate explanation. Start buttons name the selected action.
+- Lead results with the outcome, savings and elapsed time. Keep secondary settings/support/report tools under More.
+- Use dark mode by default while preserving saved preferences. Improve contrast, keyboard navigation, search shortcuts and resizing.
+- Open large results with 250-book pages and load technical text only when requested. Complete reports remain available.
+- Give clearer failure explanations and skip reasons without removing technical evidence.
+- Simplify Python/Pillow setup and add a user-facing error reference.
+
+### Fixes
+
+- Detect read-only original archives before replacement conversion and explain how to resolve the protection without changing it automatically.
+- Identify the failed replacement step and distinguish access denial from file locks. Preserve completed encoding/validation details when final installation fails.
+
+- Handle results selection events safely when row data is missing or the list is refreshing/closing, preventing a NoneType error.
+- Restore readable backgrounds and button text when switching from dark to light mode.
+- Fix temporary-folder paths ending in a backslash or pasted inside quotes; explain invalid folder entries before processing.
+- Fix text-encoding errors involving valid non-English characters and symbols in filenames.
+- Detect an existing destination CBZ before starting CBR replacement, avoiding unnecessary conversion while protecting existing files.
+- Distinguish archive damage and conflicting page names from encoder failures; do not label a readable source corrupt without evidence.
+- Avoid referring to a recovery file that was never created.
+
 ## 1.0.2 - 2026-10-23
 
-Read-only archive members, macOS metadata and atomic XML checkpoint handling fixes.
+### Fixes
 
-- Clear archived Windows read-only flags only on generated extraction storage, before page conversion and metadata injection. Retry read-only cleanup errors within that work tree; source archive permissions and ACLs are not modified.
-- Treat image-looking `__MACOSX/._*` members as preserved attachments during analysis, page discovery, conversion, validation and recovery inspection. Retain exact manifest, attachment hash and CRC checks; ordinary/root-dot image names remain subject to image validation.
-- Add generated read-only JPEG/XML/attachment regressions at 1/12 workers, preview checks, metadata-tampering/CRC failures and native scan coverage. Existing compatible completed-book checkpoints remain reusable.
-- Write checkpoints, worker identity, settings and history through one atomic XML helper: short exclusive same-folder temporary names and file streams avoid unnecessary path growth and XML filename interpretation. Preserve original records on failed replacement and retain fail-safe checkpoint blocking.
-- Add operation/target/temp path lengths to write failures. Generated native tests cover long-path geometry, special characters, missing/blocked parents, locked records and temporary cleanup; legacy .NET reproduction confirms the old temporary-name pattern can exceed MAX_PATH.
+- Handle read-only pages and attachments extracted from comics, including cleanup afterward. Original comic permissions remain unchanged.
+- Recognize macOS metadata files as attachments rather than comic pages, preventing false image errors. Their contents are still preserved and checked.
+- Use shorter temporary filenames when saving progress, settings and history, preventing avoidable Windows path-length errors.
+- Give more useful details when saving progress fails, while preserving existing records and preventing conversion without reliable recovery tracking.
 
 ## 1.0.1 - 2026-10-22
 
-Fix 7-Zip being reported missing despite a standalone installation.
+### Fixes
 
-- Recognize standalone 7-Zip in standard Program Files folders, custom registered installation paths (both Windows registry views) and PATH, while preserving ComicRack Resources precedence.
-- Include 7za64.exe in the primary ComicRack Resources search and explain all supported locations in the missing-tool message.
-- Test absent ComicRack resources, installed/custom/PATH discovery and real CBZ listing from a standalone-shaped tool folder. No encoder, replacement or checkpoint policy changes.
+- Find standalone 7-Zip installations in standard folders, registered custom locations and PATH, resolving false missing-tool errors.
+- Recognize ComicRack's `7za64.exe` in its main resource folder.
+- Explain where the plugin looks when 7-Zip cannot be found.
 
 ## 1.0.0 - 2026-10-22
 
-First public stable release of WebP Optimizer for ComicRack Community Edition.
+First public stable release for ComicRack Community Edition.
 
-- Analyze CBZ/CBR archives and populate ImageFormat, WebPStatus and WebPReason for smart-list workflows.
-- Convert eligible JPEG pages at Q60-Q90 with validated copy or replacement, metadata/reading-progress preservation and optional backups. Existing WebP pages are not recompressed.
-- Compare five quality levels in a native viewer with synchronized zoom/scroll, pixel inspection and optional RGB measurements/8x difference heatmap.
-- Support 1-12 page workers, measured worker benchmarks, local temporary storage, Background priority and optional bounded prefetch. Conservative defaults remain Q80, original dimensions, one worker, Normal priority and prefetch off.
-- Include safe stopping, matching completed-work recognition, interrupted-work review, reports/history, preview cleanup, dark mode and remembered settings.
-- Bundle a minimal static Windows x64 ImageMagick encoder with matching third-party notices and pinned build provenance. Python/Pillow remain separately installed prerequisites; WinRAR is needed only for CBR output.
-- Include reviewed user/contributor documentation and sample UI screenshots. Installation packages exclude personal reports/settings, comic fixtures and compiler tools.
+### Features
 
-Validated with generated archive/native UI/package checks and user testing of copy/replacement, NAS, CBR-to-CBZ and reader workflows. This does not establish compatibility with every installation or source image.
+- Analyze CBZ/CBR comics and add ImageFormat, WebPStatus and WebPReason values for smart lists.
+- Convert JPEG pages to WebP at Q60-Q90, creating copies or replacing originals after validation. Preserve metadata and reading progress, with optional backups.
+- Compare five quality levels in a full-screen viewer with linked zoom/scroll, pixel inspection and optional difference measurements and heatmap.
+- Choose 1-12 page workers, benchmark worker counts, use local temporary storage or run at Background priority. Optional prefetch prepares the next book while the current one converts.
+- Safely stop after the current book, resume compatible completed work and review interrupted attempts.
+- Reopen reports and retained previews through Run history, clean up preview files, use dark mode and remember settings.
+- Include the ImageMagick encoder and its license notices. Python and Pillow are installed separately; WinRAR is needed only to create CBR output.
+- Include installation, workflow and contributor guides with screenshots.
+
+Tested with copy/replacement, NAS storage, CBR-to-CBZ conversion and reader workflows. Individual installations and source files can still expose issues.
 
 ## Development history
 
-The entries below are pre-release milestones. Earlier local 1.x filenames were internal numbering, not previous public stable releases.
+These milestones describe work before the first public release. Internal build numbers were not public stable releases.
 
 ## 0.9.13 - 2026-10-22
 
-Final authorized feature before the 1.0 candidate acceptance pass:
+### Features
 
-- Optional full-resolution preview difference analysis: mean absolute RGB change, RMS error, maximum channel change, signed RGB brightness estimate and changed-pixel percentage.
-- An explicitly amplified 8x difference heatmap and synchronized coordinate/RGB inspector work with the existing zoom/scroll controls.
-- Analysis runs off the UI thread on detached color-managed bitmap snapshots, with no extra files, dependencies or normal conversion overhead. Page/quality changes release results; closing abandons the job safely. Matching dimensions and a 16-million-pixel memory limit are enforced.
-- Known identical/localized changes and real asynchronous viewer lifecycle are covered by native tests. These diagnostics measure pixel changes, not perceptual quality percentages.
-- Refresh release documentation, shorten the README landing page, preserve smart-list screenshots in Advanced Usage and update build/contributor guidance for the final feature set.
+- Add optional pixel-difference measurements, an amplified difference heatmap and an RGB inspector to the preview viewer.
 
-## 0.9.12 - Self-contained encoder and redistribution materials (prerelease)
+### Changes
 
-- Bundle a minimal static ImageMagick 7.1.2-34 Q8 Windows x64 build with JPEG/WebP/Little CMS. Remove the need to ship loose Microsoft Visual C++/OpenMP DLLs or the large optional delegate set. Python/Pillow remain prerequisites.
-- Include exact upstream license/notice files, required JPEG attribution, WebP patent grant, MinGW notices and GCC runtime linking exception, with pinned input and binary/license hashes and a documented build recipe.
-- Reject mismatched encoder provenance, changed license files and unexpected non-system DLL imports during packaging. Preserve the old encoder/DLLs privately for comparison.
-- Replace two legacy icons of undocumented origin with original MIT-licensed vector-based artwork.
-- Candidate comparisons produced 20/20 byte-identical outputs against the old encoder across RGB/gray/CMYK/Adobe RGB, Q60-Q90 and resize; helper/archive concurrency checks also passed. Final live acceptance remains required; no 1.0 release is published by this preparation.
+- Run analysis in the background without adding files or slowing normal conversions. Matching page dimensions and a 16-million-pixel limit keep memory use bounded.
+- Refresh release documentation and shorten the README.
 
-## 0.9.11 - Feature freeze and release-readiness audit (prerelease)
+## 0.9.12 - Bundled encoder and licensing
 
-- Freeze the 1.0 feature set; no conversion behavior, defaults or checkpoint policy changes.
-- Record live confirmation that normal replacement retains the same ComicRack entry after restart. The earlier manually restored-file path problem is not a reproduced normal-replacement defect.
-- Refresh installation/performance documentation and prepare a plugin-only packaging option with upstream encoder prerequisites, alongside local bundled-tools testing drafts.
-- Add repeatable artifact audits for exact allowlists, current file contents, versions, CRCs and SHA-256 manifests. Fresh-user installation acceptance and bundled-binary redistribution review remain explicit release gates.
+### Features
 
-## 0.9.10 - Prefetch comparison follow-up (prerelease)
+- Bundle a smaller Windows x64 ImageMagick encoder without requiring a separate Visual C++ runtime installation. Python/Pillow remain separate prerequisites.
 
-- Avoid a redundant Python cleanup process after each consumed cache when the conversion worker acknowledges cleanup of that exact manifest. Missing acknowledgements retain guarded fallback cleanup; safe-stop cleanup remains.
-- Include per-book prefetch usage, next-cache readiness, manifest cleanup acknowledgements and fallback notes in conversion reports, plus summary counts for caches used/prepared.
-- Keep prefetch optional and disabled by default. Live copy-mode comparisons showed only a nominal benefit; repeat the same workload with this startup overhead removed before deciding whether to retain the feature.
+### Changes
 
-## 0.9.9 - Measured performance choices (prerelease)
+- Include dependency licenses, notices and a documented encoder build process.
+- Add package checks for unexpected dependencies or changed bundled files.
+- Replace two icons with original MIT-licensed artwork.
 
-- Expand page workers to 1, 2, 4, 6, 8, 10 and 12; retain the one-worker default and existing completion-checkpoint compatibility.
-- Add native quick/thorough worker benchmarks at fixed quality with full conversion throughput, process CPU, estimated RAM, logical I/O and stage timings. Apply recommendations explicitly; tests keep originals and library values unchanged.
-- Add remembered Normal/Background CPU priority and opt-in bounded local prefetch of one next compressed archive, with cache checksums, source guards and exact cleanup.
-- Overlap ZIP hash/decode validation within the selected worker and buffer budgets while retaining manifest, CRC, content and image-decode checks. CBR checks stay unchanged.
-- Generated 24-page conversions at all seven counts produced identical encoded members and preserved ICC profiles/attachments. Cache handoff, cancellation, corruption, cleanup and native benchmark checks cover disposable fixtures only; real ComicRack/NAS acceptance remains required.
+## 0.9.11 - Release preparation
 
-## 0.9.8 - Long filenames and explicit size-policy skips
+### Changes
 
-- ImageMagick uses binary input/output file handles to avoid filename API limits on long extracted paths, including NAS-only temporary storage. Encoder settings, ICC handling and page names remain unchanged.
-- Manifest errors retain strict rejection and now list expected/actual counts plus every missing, unexpected and duplicate member.
-- WebPStatus distinguishes `Skipped - size policy` from other `Skipped` outcomes. Unchanged legacy size-policy outcomes migrate during Analyze Only, without encoding; checkpoint reuse preserves the distinct reason.
-- Optional smart list for informational size-policy skips documented. The Ready conversion list is unchanged.
-- Generated >300-character Unicode/bracket-path checks verify identical encoded bytes, profile/dimensions, exclusive output creation and unchanged source data. Existing completed-work compatibility remains unchanged.
-- No concurrency, GPU or prefetch changes in this build. Older ambiguous outputs still require explicit recovery review.
+- Freeze the initial release's feature set and review installation/performance guidance.
+- Add repeatable package checks for included files, version numbers and download checksums.
+- Confirm that normal replacement retains the existing ComicRack entry after restarting.
 
-## 0.9.7 - Isolate history from ComicRack
+## 0.9.10 - Prefetch follow-up
 
-- New live diagnostic evidence places the recurring ComicRack failure during history-record loading; earlier in-process navigation changes did not resolve it.
-- Both history entry points now use an independent hidden-console STA PowerShell/IronPython host. History, historical reports and retained previews stay outside ComicRack's process; there is no in-process fallback.
-- Prepare new test returns only whitelisted settings through a per-session XML result. Unsaved options, current selection and explicit-start behavior are preserved.
-- Helper startup failures and abnormal exits are reported without terminating the caller. Exact request/response files are cleaned; failure details go to Reports/history-helper-error.log.
-- Ten real helper launches, Unicode retest round trip, forced abrupt helper exit followed by successful reopening, unchanged settings/reports and no-parent-browser checks passed.
-- Live ComicRack confirmation is still required; no claim that the original runtime fault itself has been diagnosed or repaired.
+### Changes
+
+- Show whether prefetch was used and whether the next book was ready in conversion reports.
+- Keep prefetch optional and off by default because measured benefits were small.
+
+### Fixes
+
+- Avoid starting an unnecessary cleanup process when the conversion worker has already removed its prefetched files. Keep fallback cleanup when needed.
+
+## 0.9.9 - Performance choices
+
+### Features
+
+- Offer 1, 2, 4, 6, 8, 10 and 12 page workers, with one worker as the default.
+- Add Quick and Thorough benchmarks showing conversion speed, CPU use, estimated RAM, file activity and time spent at each stage.
+- Add remembered Normal/Background priority and optional local prefetch of the next archive.
+
+### Changes
+
+- Speed up CBZ validation by checking multiple pages within the selected worker and memory limits, while retaining all integrity checks.
+
+## 0.9.8 - Long filenames and size-policy skips
+
+### Features
+
+- Use **Skipped - size policy** when a converted book does not meet the chosen savings requirement, keeping it separate from other skips.
+
+### Changes
+
+- Document an optional smart list for these informational skips.
+- List missing, unexpected and duplicate archive entries when validation fails.
+
+### Fixes
+
+- Allow ImageMagick conversion of deeply nested extracted pages, including when temporary storage is on the NAS.
+
+## 0.9.7 - Separate Run history window
+
+### Fixes
+
+- Open Run history in a separate process so a history-window failure does not close ComicRack.
+- Report history startup failures and save diagnostics for troubleshooting.
+- Preserve unsaved options and require an explicit start when preparing a new test from history.
 
 ## 0.9.6 - Dark table headers
 
-- Results, history, preflight and recovery tables use muted grey column headers with readable text and subdued separators, including unused header space.
-- Native row rendering/selection and column interaction remain intact; light mode restores the normal Windows header.
-- Header pixel checks cover the empty strip and resizing, alongside existing history and UI regressions.
+### Fixes
 
-## 0.9.5 - Dark window frames and tab edges
+- Replace bright table headers and unused header space with muted grey in dark mode. Light mode retains normal Windows headers.
 
-- Dark mode now requests a dark Windows title bar for each plugin dialog, with muted grey caption/border colors where supported. Light mode restores system defaults.
-- Repaint native tab-header bevels in subdued grey after Windows' paint pass, including the selected-tab border.
-- Caption updates follow window handle creation/recreation without replacing window procedures, changing system preferences or altering history navigation.
-- Native dark/light caption readback and style-change checks added; unsupported Windows attributes are ignored safely.
+## 0.9.5 - Dark window frames and tabs
 
-## 0.9.4 - History navigation crash mitigation
+### Fixes
 
-- Run history returns from and disposes the options dialog before opening history; closing history restores unsaved choices without starting a run or saving settings.
-- Prepare new test still restores recorded choices for the current selection.
-- Owned report dialogs use a passive CLR handle owner instead of subclassing the parent's window procedure with NativeWindow.AssignHandle.
-- Bounded append diagnostics retain the opening sequence and process name/ID instead of overwriting the last stage.
-- Ten repeated small-stack navigation cycles, settings/draft preservation and owned-report regression checks. The intermittent live ComicRack crash remains awaiting user confirmation after restart.
+- Use dark title bars and subdued window borders where Windows supports them.
+- Remove bright tab borders in dark mode.
+
+## 0.9.4 - History navigation
+
+### Fixes
+
+- Close the options dialog before opening history, then restore unsaved choices when returning.
+- Improve window ownership and history diagnostics while investigating intermittent crashes. Further isolation followed in 0.9.7.
 
 ## 0.9.3 - Softer dark controls
 
-- Dark dropdown faces and popup items, including disabled fields, replace Windows' bright native fill while preserving normal selection/keyboard behavior.
-- Flat buttons use subdued borders and hover/pressed shades; disabled checkbox labels remain readable against charcoal backgrounds.
-- Dark tab headers and frames remove bright native strips. Light mode retains standard Windows rendering.
-- Initialize CLR controls before nested modal callbacks; regression checks cover disabled/active palettes and small-stack history opening.
+### Fixes
 
-## 0.9.2 - Presentation and setup clarity
+- Replace bright dropdowns, buttons and tab backgrounds with darker shades.
+- Keep disabled labels readable and preserve normal keyboard controls.
+- Improve control initialization when opening nested windows.
 
-- Optional remembered dark mode across native plugin dialogs; comic pixels remain unchanged.
-- Technical report reader adds wrapping, search with next-match navigation and bold field/section labels without removing details from saved/copied reports.
-- Setup reports WinRAR availability for every mode and distinguishes 7-Zip CBR input from optional WinRAR CBR output.
-- Clarified that Pillow currently supplies validation and color-managed preview support for every conversion backend, in addition to its optional encoder.
-- Updated quick-start workflow screenshots and all five smart-list recipes.
+## 0.9.2 - Appearance and setup
 
-## 0.9.1 — Workflow and long-run testing
+### Features
 
-- `WebPStatus` and `WebPReason` custom values distinguish actionable work, completed replacements, retained copies, skipped books and problems without changing `ImageFormat` semantics.
-- Tools & recovery tab checks selected workflow dependencies with disposable files and reviews interrupted attempts through read-only archive/page validation.
-- Guarded Allow retry archives resolved tracking records, preserves media and refuses active helpers, changed files or unresolved outputs/rollback files.
-- Pre-run selection/storage summary explains copy/backup retention and conservative per-volume budgets before work begins. Remote free-space queries have a bounded UI wait.
-- Live extraction, page-encoding, rebuild, validation and replacement stages in the processing window; progress callbacks run on the UI thread.
-- Versioned conversion-policy checkpoints survive compatible updates and display-label changes. Legacy pending attempts remain reviewable; older completed records without verified policy metadata are not guessed or migrated.
-- Optional remembered Keep PC awake setting prevents idle sleep during processing and restores previous thread requirements on completion, stop or error. The display may turn off.
-- Native support code split into a documented IronPython module and a small in-memory Windows API bridge. Generated-fixture tests cover accepted/cancelled startup, setup failures, recovery protections, live progress and power-state restoration.
-- Remains pre-release. Live history confirmation, backed-up collection testing and NAS testing precede 1.0 and the Reddit announcement.
+- Add remembered dark mode across plugin windows.
+- Add search, wrapping and clearer headings to the technical report viewer, preserving all saved and copied details.
 
-## 0.9.0 — Pre-release testing
+### Changes
 
-- History opening deferred until the options click returns; a concrete CLR dialog owner, re-entry/refresh guards and deferred loading reduce nested UI work. Last-stage history diagnostics added. Live confirmation of the reported ComicRack stack-overflow crash is still required.
-- Quality-test speed and rough ETA now update after each successful quality pass and cover remaining sampled passes. Added an actual three-book/fifteen-pass native regression test.
-- RayRayElite author credit, MIT licensing for plugin code, third-party notices and source-only GitHub packaging.
-- GitHub README with project origin, acknowledgements and contribution guidance; private release checklist and first-person Reddit announcement draft.
-- Public release numbering reset: 0.9.0 for testing, 1.0.0 reserved for the first stable release.
+- Check WinRAR availability during setup and explain that it is needed only for CBR output.
+- Clarify Pillow's validation/preview requirement and update workflow screenshots and smart-list recipes.
 
-## 0.8.0 — Performance and batch recovery
+## 0.9.1 - Workflow and long runs
 
-- Configurable 1/2/4 page workers within a sequential book workflow; explicit encoder behavior and color profiles retained.
-- CBZ image members stored without extra ZIP compression; member CRC/hash/decoding validation consolidated into one archive-read pass.
-- Normal runs scan and convert each book in turn instead of scanning the complete selection first.
-- Per-book pending/completed checkpoints, matching-file resume, size-policy skip reuse and extension-change library-path repair.
-- Policy-independent interrupted-output checks; ambiguous outputs and recovery records require inspection.
-- Performance & resume options, source throughput, rough ETA and stage timings in reports.
-- Temporary cleanup failures identify remaining work storage and request a safe stop.
-- Contributor guides, searchable runtime sections and function documentation; personal/generated files excluded from Git by local ignore rules.
-- Generated-comic worker benchmarks and native interruption/resume regression coverage.
+### Features
 
-## 0.7.0 — Run history
+- Add WebPStatus and WebPReason values for ready, completed, copied, skipped and failed books.
+- Add setup checks, a pre-run storage summary and review of interrupted attempts.
+- Add an optional Keep PC awake setting during processing.
 
-- Run history opens prior reports and available native previews.
-- Historical results preserve previews by default; previews can be deleted explicitly.
-- New runs save structured XML history records alongside text reports.
-- Legacy text reports remain discoverable, including when an XML record is missing or damaged.
-- Prepare a new quality comparison from recorded settings for review against the current selection.
-- History is available from the options window and a standalone library action without requiring selected comics or conversion dependencies.
-- Unique report filenames prevent same-second runs from overwriting one another.
+### Changes
 
-## 0.6.0 — Core workflow and previews
+- Show extraction, page conversion, rebuilding, validation and replacement stages during processing.
+- Preserve completed-work recognition across compatible updates.
 
-- Selected-book analysis, copy and validated replacement for CBZ/CBR sources.
-- Q60–Q90 conversion choices with explicit ImageMagick default.
-- Q60/Q70/Q75/Q80/Q90 quality trials on up to three spaced eligible books.
-- Native full-screen comparison, synchronized scrolling and modifier-wheel controls.
-- ICC profile retention and color-managed previews.
-- Remembered settings, safe stopping and partial-run reports.
-- Optional preview deletion when the results window closes; text reports retained.
-- Runtime-only release packaging; development tools and test assets separated.
+### Fixes
 
-This package still needs a clean-machine install check. Automated/native fixture tests and earlier user workflow checks do not establish compatibility with every ComicRack installation or NAS.
+- Prevent retries while a helper is active, files have changed or unresolved output/recovery files remain.
+- Limit the wait for free-space checks on remote storage so the interface does not wait indefinitely.
+
+## 0.9.0 - Pre-release testing
+
+### Changes
+
+- Add MIT licensing, third-party notices, GitHub documentation and contributor guidance.
+- Reserve 1.0.0 for the first public stable release.
+
+### Fixes
+
+- Update quality-test speed and remaining-time estimates after each successful quality pass.
+- Reduce nested history-window work and add diagnostics while investigating ComicRack crashes.
+
+## 0.8.0 - Performance and batch recovery
+
+### Features
+
+- Add 1/2/4 page workers while processing books one at a time.
+- Save per-book progress to resume matching work, recognize size-policy skips and review interrupted output.
+- Add source throughput, rough remaining time and stage timings to reports.
+- Add contributor guides and keep personal/generated files out of source packages.
+
+### Changes
+
+- Avoid extra ZIP compression of already compressed images and combine archive validation work.
+- Begin converting books without first scanning the entire batch.
+
+### Fixes
+
+- Repair ComicRack paths when replacement changes a book's extension.
+- Identify leftover temporary files when cleanup fails and request a safe stop.
+
+## 0.7.0 - Run history
+
+### Features
+
+- Reopen reports and retained previews, or prepare a new quality comparison from saved settings.
+- Save run summaries alongside text reports and list reports even when a summary is missing or damaged.
+- Open history from options or a standalone library action without selecting comics.
+
+### Changes
+
+- Keep previews by default when reopening saved results, with an explicit deletion option.
+
+### Fixes
+
+- Give reports unique names so runs started in the same second cannot overwrite one another.
+
+## 0.6.0 - Core workflow and previews
+
+### Features
+
+- Analyze selected CBZ/CBR books, create converted copies or replace originals after validation.
+- Offer Q60-Q90 with ImageMagick as the default encoder.
+- Compare Q60/Q70/Q75/Q80/Q90 on up to three sampled books.
+- Add a full-screen viewer with linked scrolling, mouse-wheel shortcuts and color-managed previews.
+- Remember settings, stop safely and save partial-run reports.
+- Optionally delete previews when results close, keeping text reports.
+- Separate release files from development tools and test assets.

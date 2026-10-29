@@ -2,7 +2,7 @@
 
 Make room in your comic collection from inside **ComicRack Community Edition**. Analyze CBZ/CBR archives, compare quality, and convert eligible JPEG pages to WebP. Replace originals without keeping permanent duplicates, or create separate copies.
 
-**Current release: 1.0.2**
+**Current release: 1.1.0**
 
 [Downloads](https://github.com/RayRayElite/comicrack-webp-optimizer/releases) | [User guide](ADVANCED_USAGE.md) | [Report a bug](https://github.com/RayRayElite/comicrack-webp-optimizer/issues) | [Contribute](CONTRIBUTING.md)
 
@@ -30,7 +30,7 @@ In my testing, I've typically seen **40% to 65% reductions in file size with no 
 ## Requirements and installation
 
 - **64-bit Windows**, ComicRack CE with scripting enabled, and 7-Zip (ComicRack's resource tools or a standalone Windows installation).
-- **Python 3.9+ and Pillow**, installed separately. New to Python? Follow the [step-by-step Python/Pillow setup](ADVANCED_USAGE.md#install-python-and-pillow-on-windows), including the verification commands. Pillow is required for validation/previews even with ImageMagick.
+- **Python 3.9+ and Pillow**, installed separately. Start with the [official Python Windows installer](https://www.python.org/downloads/windows/), then follow the [step-by-step Python/Pillow setup](ADVANCED_USAGE.md#install-python-and-pillow-on-windows), including the verification commands. Pillow is required for validation/previews even with ImageMagick.
 - **WinRAR only for CBR output**; reading CBR and converting it to CBZ do not need WinRAR.
 
 The main download includes the ImageMagick encoder and its license notices. No separate ImageMagick or Visual C++ runtime installation is needed for that bundle. Python/Pillow are installed separately.
@@ -85,10 +85,11 @@ Use **Match Any** for the errors list. Check `WebPReason` for skips. `Skipped - 
 
 - **Compare:** select page/quality; wheel scrolls both panes, Ctrl+wheel zooms, Shift+wheel scrolls horizontally, and F11 toggles full screen. The optional heatmap exaggerates differences **8x**; readings measure pixel changes, not quality retained.
 - **Keep previews:** uncheck **Delete this run's preview images when closing this results window**. Reports remain either way; **Run history** reopens reports and retained previews.
+- **Review results:** filter/search books, sort columns or use **Errors first**. View/copy an error, prepare a retry, review run settings or open the report folder. Optional status colors and editable support information make troubleshooting easier. See [results review](ADVANCED_USAGE.md#sort-results-and-share-one-entry).
 - **NAS or large batches:** try a local SSD temporary folder and **Benchmark worker counts**. The default is one worker; more workers use more RAM. Background priority and optional prefetch are available.
-- **Stop and continue:** **Stop after current book** finishes safely. Reselect the batch with matching settings to recognize completed work. Use **Tools & recovery > Review interrupted work** if an attempt needs inspection.
+- **Stop and continue:** **Stop after current book** finishes safely. Reselect the batch with matching settings to recognize completed work. Use **Review interrupted work** from an applicable error, the results **More** menu or **Tools & recovery** to check interrupted attempts, including in batches.
 
-See the [user guide](ADVANCED_USAGE.md) for measurements, storage, reports, resume, recovery and performance details. Keep files named in a failed-replacement report until you have reviewed the [recovery instructions](ADVANCED_USAGE.md#replacement-recovery).
+See the [error reference](ADVANCED_USAGE.md#error-reference) for failure messages and next steps, or the [user guide](ADVANCED_USAGE.md) for measurements, storage, reports, resume, recovery and performance details. Keep files named in a failed-replacement report until you have reviewed the [recovery instructions](ADVANCED_USAGE.md#replacement-recovery).
 
 ## Contributing and license
 

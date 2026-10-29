@@ -15,6 +15,9 @@ def _cleanup_prefetch(python_tool, options):
     info.Arguments = ("-3 " if python_tool == "py" else "") + _quote_argument(HELPER_SCRIPT)
     info.Arguments += " --cleanup-prefetch " + _quote_argument(options["prefetch_record"])
     info.Arguments += " --work-dir " + _quote_argument(options["work_dir"])
+    info.StandardOutputEncoding = Encoding.UTF8
+    info.StandardErrorEncoding = Encoding.UTF8
+    info.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
     info.UseShellExecute, info.CreateNoWindow = False, True
     info.RedirectStandardOutput, info.RedirectStandardError = True, True
     process = Process()
@@ -32,20 +35,22 @@ class PerformanceSetupForm(Form):
     # [B01] Explicit quick/thorough choice; fixed quality, no preview files.
     def __init__(self, options):
         self.Text = "Benchmark your PC and storage"
-        self.ClientSize = Size(700, 310)
+        self.ClientSize = Size(760, 310)
+        self.FormBorderStyle, self.MaximizeBox = FormBorderStyle.FixedDialog, False
         self.StartPosition = FormStartPosition.CenterScreen
         _ui_label(self, "Find a useful worker count", 24, 20, 650, 32, True)
         _ui_label(self, "Select unconverted JPEG comics. Up to 3 eligible books are tested at every worker count, using your current quality, encoder and temporary folder. Originals and ComicRack tags stay unchanged.", 24, 64, 650, 62)
         self._repeats = _ui_combo(self, "Test length", ["Quick - one pass", "Thorough - three rotated passes"], 144)
         self._repeats.SelectedIndex = 0
         _ui_label(self, "Quick runs make up to 21 full conversions; thorough runs up to 63. Caches and other apps affect results. Temporary archives are validated, then deleted after every test.", 24, 190, 650, 52)
-        start, cancel = Button(), Button()
+        start, cancel = _new_button(), _new_button()
         start.Text, cancel.Text = "Start benchmark", "Cancel"
         start.Location, start.Size = Point(390, 262), Size(145, 32)
         cancel.Location, cancel.Size = Point(546, 262), Size(125, 32)
         start.DialogResult, cancel.DialogResult = DialogResult.OK, DialogResult.Cancel
         self.Controls.Add(start)
         self.Controls.Add(cancel)
+        self.AcceptButton, self.CancelButton = start, cancel
 
 
 class PerformanceResultsForm(Form):
@@ -53,12 +58,14 @@ class PerformanceResultsForm(Form):
     def __init__(self, summaries, report, path, recommended):
         self.Text = "Worker benchmark results"
         self.ClientSize = Size(1120, 650)
+        self.MinimumSize = Size(1136, 650)
         self.StartPosition = FormStartPosition.CenterScreen
         self.applied_workers = None
         _ui_label(self, "Fastest measured: " + recommended + " workers" if recommended else "Benchmark incomplete - no recommendation", 24, 20, 1070, 34, True)
         _ui_label(self, "Measured full conversion throughput, including validation. RAM is a sampled process estimate; process I/O is not physical disk or NAS traffic. CPU is a percentage of the whole PC.", 24, 64, 1070, 48)
         tabs = _new_tabs()
         tabs.Location, tabs.Size = Point(20, 128), Size(1080, 440)
+        tabs.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
         overview, details = TabPage("Measurements"), TabPage("Full report")
         tabs.TabPages.Add(overview)
         tabs.TabPages.Add(details)
@@ -78,8 +85,10 @@ class PerformanceResultsForm(Form):
         text.Dock, text.Text = DockStyle.Fill, report
         details.Controls.Add(text)
         self.Controls.Add(tabs)
-        _ui_label(self, "* Logical I/O, including cached/temp activity. Reports: " + path, 24, 578, 720, 54)
-        apply, close = Button(), Button()
+        report_note = _ui_label(self, "* Logical I/O, including cached/temp activity. Reports: " + path, 24, 578, 720, 54)
+        report_note.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+        report_note.AutoEllipsis = True
+        apply, close = _new_button(), _new_button()
         apply.Text, apply.Enabled = "Use " + (recommended or "-") + " workers", bool(recommended)
         apply.Location, apply.Size = Point(770, 594), Size(180, 34)
         def accept(sender, event):
@@ -88,8 +97,10 @@ class PerformanceResultsForm(Form):
         apply.Click += accept
         close.Text, close.DialogResult = "Close", DialogResult.Cancel
         close.Location, close.Size = Point(964, 594), Size(130, 34)
+        apply.Anchor = close.Anchor = AnchorStyles.Bottom | AnchorStyles.Right
         self.Controls.Add(apply)
         self.Controls.Add(close)
+        self.CancelButton = close
 
 
 def _performance_summary(measurements, expected):
@@ -116,12 +127,14 @@ def _performance_summary(measurements, expected):
 
 def _run_performance_test(books, options):
     """[B04] Sequential disposable trials; Stop finishes the active test archive."""
+    options = dict(options)
+    options["work_dir"] = _normalize_work_directory(options.get("work_dir", ""))
     python, archive_tool = _find_python_tool(), _find_archive_tool()
     if not books or not python or not archive_tool:
         MessageBox.Show("Select unconverted JPEG comics and check Python/7-Zip setup first.", "Worker benchmark")
         return None
     setup = PerformanceSetupForm(options)
-    _set_ui_theme(bool(options.get("dark_mode", False)), setup)
+    _set_ui_theme(bool(options.get("dark_mode", True)), setup)
     try:
         if setup.ShowDialog() != DialogResult.OK:
             return None

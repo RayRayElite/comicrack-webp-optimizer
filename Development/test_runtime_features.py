@@ -104,7 +104,9 @@ try:
             if state["scenario"] == "before_convert" and "Converting" in status:
                 self.stop_requested = True
     class TestReport(object):
-        def __init__(self, text, path):
+        def Dispose(self): pass
+        def __init__(self, text, path, **kwargs):
+            self.retry_request = None
             state["report"] = text
         def ShowDialog(self):
             pass
